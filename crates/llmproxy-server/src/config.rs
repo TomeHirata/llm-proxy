@@ -112,16 +112,43 @@ pub fn redacted(cfg: &AppConfig) -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let saved = keys.iter().map(|k| (*k, std::env::var(*k).ok())).collect();
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
 
     #[test]
+    #[serial(env)]
     fn interpolates_env_vars() {
+        let _g = EnvGuard::new(&["LLMPROXY_TEST_KEY"]);
         std::env::set_var("LLMPROXY_TEST_KEY", "abc123");
         let interp = interpolate_env("api_key: ${LLMPROXY_TEST_KEY}");
         assert_eq!(interp, "api_key: abc123");
     }
 
     #[test]
+    #[serial(env)]
     fn missing_env_becomes_empty() {
+        let _g = EnvGuard::new(&["LLMPROXY_MISSING_XYZ"]);
         std::env::remove_var("LLMPROXY_MISSING_XYZ");
         let interp = interpolate_env("api_key: ${LLMPROXY_MISSING_XYZ}");
         assert_eq!(interp, "api_key: ");

@@ -3,7 +3,8 @@
 # The config file is optional. If omitted, credentials are resolved per-request
 # from (1) the Authorization header, or (2) standard environment variables
 # (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.). Bedrock always reads AWS creds
-# from the environment or ~/.aws/credentials.
+# from environment variables only (shared-credentials / profile files are not
+# supported in v0.1).
 
 server:
   host: 127.0.0.1

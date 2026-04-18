@@ -135,15 +135,17 @@ fn tokio_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 }
 
 async fn run_server(cfg: AppConfig) -> anyhow::Result<()> {
-    let host = cfg.server.host.clone();
-    let port = cfg.server.port;
     let registry = Arc::new(ProviderRegistry::from_config(&cfg));
     let state = AppState { registry };
     let app = router(state);
 
-    let addr = format!("{host}:{port}");
-    tracing::info!("llmproxy listening on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    // Binding via (host, port) handles IPv4, IPv6, and hostnames — unlike
+    // `format!("{host}:{port}")`, which would produce an invalid string for
+    // an IPv6 host like `::1`.
+    let listener =
+        tokio::net::TcpListener::bind((cfg.server.host.as_str(), cfg.server.port)).await?;
+    let local = listener.local_addr()?;
+    tracing::info!("llmproxy listening on http://{local}");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -222,7 +224,7 @@ fn list_providers(config_path: Option<&str>) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
     let registry = ProviderRegistry::from_config(&cfg);
     println!("Configured providers:");
-    for (name, configured) in registry.configured_names(&cfg) {
+    for (name, configured) in registry.configured_names() {
         let mark = if configured { "✓" } else { "✗" };
         let note = if configured {
             format!("(use \"{name}/<model_id>\")")
@@ -236,7 +238,7 @@ fn list_providers(config_path: Option<&str>) -> anyhow::Result<()> {
                     "mistral" => "MISTRAL_API_KEY",
                     "togetherai" => "TOGETHERAI_API_KEY",
                     "bedrock" => "AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION",
-                    "azure" => "azure.endpoint + azure.api_key in config",
+                    "azure" => "azure.endpoint + azure.api_version + azure.api_key in config",
                     _ => "credentials",
                 }
             )

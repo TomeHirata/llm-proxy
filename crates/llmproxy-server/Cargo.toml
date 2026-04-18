@@ -19,7 +19,6 @@ bytes       = { workspace = true }
 axum        = { version = "0.7", features = ["macros"] }
 tower-http  = { version = "0.5", features = ["trace", "cors"] }
 clap        = { version = "4", features = ["derive", "env"] }
-config      = "0.14"
 dotenvy     = "0.15"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 regex       = "1"
