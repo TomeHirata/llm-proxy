@@ -29,6 +29,9 @@ daemonize   = "0.5"
 serde_yaml  = "0.9"
 libc        = "0.2"
 
+[dev-dependencies]
+serial_test = "3"
+
 [package.metadata.deb]
 assets = [
     ["target/release/llmproxy", "usr/bin/", "755"],

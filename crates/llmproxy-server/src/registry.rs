@@ -203,6 +203,7 @@ fn provider_credential(name: &str, p: &ProviderConfig) -> Option<Credential> {
 mod tests {
     use super::*;
     use crate::config::{AppConfig, ProviderConfig, ServerConfig};
+    use serial_test::serial;
 
     fn base_cfg() -> AppConfig {
         let mut cfg = AppConfig {
@@ -243,6 +244,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn resolve_falls_back_to_env_var() {
         std::env::set_var("OPENAI_API_KEY", "from-env");
         let reg = ProviderRegistry::from_config(&AppConfig::default());
@@ -275,6 +277,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn bedrock_ignores_bearer_header() {
         std::env::remove_var("AWS_ACCESS_KEY_ID");
         let reg = ProviderRegistry::from_config(&AppConfig::default());
@@ -286,6 +289,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn model_id_preserves_slashes() {
         std::env::set_var("AWS_ACCESS_KEY_ID", "x");
         std::env::set_var("AWS_SECRET_ACCESS_KEY", "y");
