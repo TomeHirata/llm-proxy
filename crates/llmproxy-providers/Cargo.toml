@@ -1,0 +1,25 @@
+[package]
+name    = "llmproxy-providers"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+llmproxy-core = { path = "../llmproxy-core" }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+reqwest       = { workspace = true }
+tokio         = { workspace = true }
+async-trait   = { workspace = true }
+bytes         = { workspace = true }
+futures       = { workspace = true }
+tracing       = { workspace = true }
+uuid          = { workspace = true }
+chrono        = { workspace = true }
+async-stream  = "0.3"
+http          = "1"
+aws-sigv4     = "1"
+aws-credential-types = "1"
+aws-smithy-runtime-api = "1"
+
+[dev-dependencies]
+tokio = { workspace = true }

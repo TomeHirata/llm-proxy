@@ -1,0 +1,33 @@
+# ~/.config/llmproxy/config.yaml — llmproxy v0.1 example
+#
+# The config file is optional. If omitted, credentials are resolved per-request
+# from (1) the Authorization header, or (2) standard environment variables
+# (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.). Bedrock always reads AWS creds
+# from the environment or ~/.aws/credentials.
+
+server:
+  host: 127.0.0.1
+  port: 8080
+
+providers:
+  openai:
+    api_key: ${OPENAI_API_KEY}
+
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+
+  gemini:
+    api_key: ${GEMINI_API_KEY}
+
+  mistral:
+    api_key: ${MISTRAL_API_KEY}
+
+  bedrock:
+    region: us-east-1
+    # credentials from env: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+    # or ~/.aws/credentials
+
+  azure:
+    api_key: ${AZURE_OPENAI_API_KEY}
+    endpoint: https://my-resource.openai.azure.com
+    api_version: "2024-02-01"
