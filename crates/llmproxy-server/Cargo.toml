@@ -1,0 +1,38 @@
+[package]
+name    = "llmproxy-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "llmproxy"
+path = "src/main.rs"
+
+[dependencies]
+llmproxy-core      = { path = "../llmproxy-core" }
+llmproxy-providers = { path = "../llmproxy-providers" }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+futures     = { workspace = true }
+bytes       = { workspace = true }
+axum        = { version = "0.7", features = ["macros"] }
+tower-http  = { version = "0.5", features = ["trace", "cors"] }
+clap        = { version = "4", features = ["derive", "env"] }
+dotenvy     = "0.15"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+regex       = "1"
+anyhow      = "1"
+dirs        = "5"
+daemonize   = "0.5"
+serde_yaml  = "0.9"
+libc        = "0.2"
+
+[dev-dependencies]
+serial_test = "3"
+
+[package.metadata.deb]
+assets = [
+    ["target/release/llmproxy", "usr/bin/", "755"],
+    ["config.example.yaml", "etc/llmproxy/config.yaml", "644"],
+]

@@ -1,0 +1,75 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install aarch64 linker (Linux ARM64 only)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p ~/.cargo
+          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+      - run: cargo build --release --target ${{ matrix.target }} -p llmproxy-server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llmproxy-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/llmproxy
+
+  macos-universal:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: llmproxy-x86_64-apple-darwin
+          path: artifacts/x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: llmproxy-aarch64-apple-darwin
+          path: artifacts/aarch64
+      - run: |
+          lipo -create \
+            artifacts/x86_64/llmproxy \
+            artifacts/aarch64/llmproxy \
+            -output llmproxy-universal-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llmproxy-universal-apple-darwin
+          path: llmproxy-universal-apple-darwin
+
+  debian:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-deb
+      - run: cargo deb -p llmproxy-server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llmproxy-deb
+          path: target/debian/*.deb
