@@ -1,19 +1,22 @@
 mod config;
 mod registry;
 mod server;
+mod usage_log;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{bail, Context};
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 use llmproxy_core::{
     openai_types::ChatMessage, openai_types::ChatRequest, openai_types::MessageContent,
 };
 
 use crate::{
-    config::{load_config, AppConfig},
+    config::{load_config, AppConfig, UsageLogConfig},
     registry::ProviderRegistry,
     server::{router, AppState},
+    usage_log::{parse_since, UsageStore},
 };
 
 #[derive(Parser)]
@@ -49,6 +52,33 @@ enum Command {
     /// Config helpers.
     #[command(subcommand)]
     Config(ConfigSub),
+    /// Query the persistent usage log (requires `usage_log.enabled: true`).
+    #[command(subcommand)]
+    Usage(UsageSub),
+}
+
+#[derive(Subcommand)]
+enum UsageSub {
+    /// Aggregate counts, success rate, latency, and token totals.
+    Summary {
+        #[arg(long)]
+        config: Option<String>,
+        /// How far back to summarize (e.g. `7d`, `24h`, `30m`). Default: 7d.
+        #[arg(long, default_value = "7d")]
+        since: String,
+    },
+    /// Print the most recent N log entries.
+    Recent {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Run a one-shot retention prune now and exit.
+    Prune {
+        #[arg(long)]
+        config: Option<String>,
+    },
 }
 
 #[derive(Parser)]
@@ -99,6 +129,11 @@ fn main() -> anyhow::Result<()> {
             ConfigSub::Init => config_init(),
             ConfigSub::Show { config } => config_show(config.as_deref()),
         },
+        Command::Usage(sub) => match sub {
+            UsageSub::Summary { config, since } => usage_summary(config.as_deref(), &since),
+            UsageSub::Recent { config, limit } => usage_recent(config.as_deref(), limit),
+            UsageSub::Prune { config } => usage_prune(config.as_deref()),
+        },
     }
 }
 
@@ -136,7 +171,15 @@ fn tokio_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 
 async fn run_server(cfg: AppConfig) -> anyhow::Result<()> {
     let registry = Arc::new(ProviderRegistry::from_config(&cfg));
-    let state = AppState { registry };
+    let usage_store = open_usage_store_for(&cfg.usage_log)?;
+    if let Some(store) = &usage_store {
+        spawn_retention_task(store.clone(), cfg.usage_log.retention_days);
+        tracing::info!("usage log: enabled ({})", store.path().display());
+    }
+    let state = AppState {
+        registry,
+        usage_store,
+    };
     let app = router(state);
 
     // Binding via (host, port) handles IPv4, IPv6, and hostnames — unlike
@@ -148,6 +191,33 @@ async fn run_server(cfg: AppConfig) -> anyhow::Result<()> {
     tracing::info!("llmproxy listening on http://{local}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn open_usage_store_for(cfg: &UsageLogConfig) -> anyhow::Result<Option<UsageStore>> {
+    if !cfg.enabled {
+        return Ok(None);
+    }
+    let path = cfg
+        .path
+        .clone()
+        .unwrap_or_else(|| data_dir().join("usage.sqlite"));
+    Ok(Some(UsageStore::open(&path)?))
+}
+
+fn spawn_retention_task(store: UsageStore, retention_days: u32) {
+    let retention = Duration::from_secs(retention_days as u64 * 86_400);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(3600));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            match store.prune(retention).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("usage log: pruned {n} rows older than {retention_days}d"),
+                Err(e) => tracing::warn!("usage log prune failed: {e}"),
+            }
+        }
+    });
 }
 
 fn run_as_daemon(cfg: AppConfig) -> anyhow::Result<()> {
@@ -468,6 +538,127 @@ fn data_dir() -> PathBuf {
     PathBuf::from(home).join(".local/share/llmproxy")
 }
 
+fn open_store_or_error(cfg: &AppConfig) -> anyhow::Result<UsageStore> {
+    if !cfg.usage_log.enabled {
+        bail!("usage log is disabled — set usage_log.enabled: true in config");
+    }
+    let path = cfg
+        .usage_log
+        .path
+        .clone()
+        .unwrap_or_else(|| data_dir().join("usage.sqlite"));
+    if !path.exists() {
+        bail!(
+            "usage log database not found at {} — start the server first so it can be created",
+            path.display()
+        );
+    }
+    UsageStore::open(&path)
+}
+
+fn usage_summary(config_path: Option<&str>, since: &str) -> anyhow::Result<()> {
+    let cfg = load_config(config_path)?;
+    let since_dur = parse_since(since)?;
+    let rt = tokio_runtime()?;
+    rt.block_on(async move {
+        let store = open_store_or_error(&cfg)?;
+        let start = Utc::now() - since_dur;
+        let (rows, totals) = store.summary(start).await?;
+
+        println!("Usage since {} ({})", start.to_rfc3339(), since);
+        println!();
+        println!(
+            "  {:<12} {:<36} {:>8} {:>8} {:>9} {:>9} {:>9} {:>10} {:>10}",
+            "PROVIDER", "MODEL", "COUNT", "OK", "AVG_MS", "P50_MS", "P95_MS", "PROMPT_T", "COMPL_T"
+        );
+        for r in &rows {
+            println!(
+                "  {:<12} {:<36} {:>8} {:>8} {:>9.1} {:>9} {:>9} {:>10} {:>10}",
+                r.provider,
+                truncate(&r.model_id, 36),
+                r.count,
+                r.success_count,
+                r.avg_latency_ms,
+                r.p50_latency_ms,
+                r.p95_latency_ms,
+                r.prompt_tokens,
+                r.completion_tokens,
+            );
+        }
+        println!();
+        println!(
+            "  Total requests: {} ({} successful, {:.1}% success)",
+            totals.count,
+            totals.success_count,
+            if totals.count == 0 {
+                0.0
+            } else {
+                100.0 * totals.success_count as f64 / totals.count as f64
+            },
+        );
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            totals.prompt_tokens,
+            totals.completion_tokens,
+            totals.prompt_tokens + totals.completion_tokens
+        );
+        anyhow::Ok(())
+    })
+}
+
+fn usage_recent(config_path: Option<&str>, limit: usize) -> anyhow::Result<()> {
+    let cfg = load_config(config_path)?;
+    let rt = tokio_runtime()?;
+    rt.block_on(async move {
+        let store = open_store_or_error(&cfg)?;
+        let rows = store.recent(limit).await?;
+        println!(
+            "  {:<26} {:<10} {:<30} {:>6} {:>8} {:>10} {:>10}",
+            "TIMESTAMP", "PROVIDER", "MODEL", "STATUS", "LAT_MS", "PROMPT_T", "COMPL_T"
+        );
+        for e in rows {
+            println!(
+                "  {:<26} {:<10} {:<30} {:>6} {:>8} {:>10} {:>10}",
+                e.created_at.to_rfc3339(),
+                e.provider,
+                truncate(&e.model_id, 30),
+                e.status,
+                e.latency_ms,
+                e.prompt_tokens.map(|v| v.to_string()).unwrap_or_default(),
+                e.completion_tokens
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            );
+        }
+        anyhow::Ok(())
+    })
+}
+
+fn usage_prune(config_path: Option<&str>) -> anyhow::Result<()> {
+    let cfg = load_config(config_path)?;
+    let retention = Duration::from_secs(cfg.usage_log.retention_days as u64 * 86_400);
+    let rt = tokio_runtime()?;
+    rt.block_on(async move {
+        let store = open_store_or_error(&cfg)?;
+        let n = store.prune(retention).await?;
+        println!(
+            "pruned {n} rows older than {}d",
+            cfg.usage_log.retention_days
+        );
+        anyhow::Ok(())
+    })
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
 const DEFAULT_CONFIG: &str = r#"# ~/.config/llmproxy/config.yaml
 server:
   host: 127.0.0.1
@@ -488,4 +679,11 @@ providers:
     api_key: ${AZURE_OPENAI_API_KEY}
     endpoint: https://my-resource.openai.azure.com
     api_version: "2024-02-01"
+
+# Persistent request/response log. Opt-in: captured prompts/responses can
+# contain sensitive content, so keep this disabled unless you need it.
+usage_log:
+  enabled: false
+  retention_days: 30
+  # path: ~/.local/share/llmproxy/usage.sqlite
 "#;

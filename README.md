@@ -61,7 +61,32 @@ llmproxy install               # register launchd agent (macOS) or systemd user 
 llmproxy uninstall             # remove the autostart service
 llmproxy config init           # scaffold ~/.config/llmproxy/config.yaml
 llmproxy config show           # print resolved config with secrets redacted
+llmproxy usage summary         # aggregate stats from the persistent log
+llmproxy usage recent          # most recent log entries
+llmproxy usage prune           # one-shot retention cleanup
 ```
+
+### Usage log (opt-in)
+
+Enable `usage_log.enabled: true` in config to persist a row per request —
+request + response bodies, HTTP status, latency, and token counts — into a
+local SQLite database. Rows older than `retention_days` (default 30) are
+pruned hourly.
+
+```yaml
+usage_log:
+  enabled: true
+  retention_days: 30
+  # path: ~/.local/share/llmproxy/usage.sqlite
+```
+
+```bash
+llmproxy usage summary --since 7d
+llmproxy usage recent --limit 50
+```
+
+Disabled by default because captured prompts/responses can contain sensitive
+content. The `Authorization` header is never logged.
 
 ### Routing
 

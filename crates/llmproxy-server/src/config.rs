@@ -9,6 +9,37 @@ pub struct AppConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub usage_log: UsageLogConfig,
+}
+
+/// Opt-in persistent request/response log. Disabled by default because
+/// captured prompts/responses can contain sensitive data.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UsageLogConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// How long to keep rows around, in days.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
+    /// Override for where the SQLite file lives. Defaults to
+    /// `~/.local/share/llmproxy/usage.sqlite`.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+}
+
+impl Default for UsageLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            retention_days: default_retention_days(),
+            path: None,
+        }
+    }
+}
+
+fn default_retention_days() -> u32 {
+    30
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

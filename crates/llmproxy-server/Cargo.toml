@@ -27,9 +27,14 @@ dirs        = "5"
 daemonize   = "0.5"
 serde_yaml  = "0.9"
 libc        = "0.2"
+rusqlite    = { version = "0.31", features = ["bundled"] }
+chrono      = { workspace = true }
+uuid        = { workspace = true }
+humantime   = "2"
 
 [dev-dependencies]
 serial_test = "3"
+tempfile    = "3"
 
 [package.metadata.deb]
 assets = [

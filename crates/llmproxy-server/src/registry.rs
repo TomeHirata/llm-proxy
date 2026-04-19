@@ -252,6 +252,7 @@ mod tests {
         let mut cfg = AppConfig {
             server: ServerConfig::default(),
             providers: HashMap::new(),
+            ..Default::default()
         };
         cfg.providers.insert(
             "anthropic".into(),
