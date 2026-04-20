@@ -4,8 +4,11 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  build-binaries:
     strategy:
       fail-fast: false
       matrix:
@@ -40,7 +43,7 @@ jobs:
           path: target/${{ matrix.target }}/release/llmproxy
 
   macos-universal:
-    needs: build
+    needs: build-binaries
     runs-on: macos-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -61,15 +64,260 @@ jobs:
           name: llmproxy-universal-apple-darwin
           path: llmproxy-universal-apple-darwin
 
-  debian:
-    needs: build
+  # Build one .deb per (distro, codename, arch) inside that distro's container
+  # so shared-library deps are resolved against the target distro's libc/openssl.
+  build-deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            codename: bookworm
+            arch: amd64
+            platform: linux/amd64
+          - distro: debian
+            codename: bookworm
+            arch: arm64
+            platform: linux/arm64
+          - distro: debian
+            codename: trixie
+            arch: amd64
+            platform: linux/amd64
+          - distro: debian
+            codename: trixie
+            arch: arm64
+            platform: linux/arm64
+          - distro: ubuntu
+            codename: jammy
+            arch: amd64
+            platform: linux/amd64
+          - distro: ubuntu
+            codename: jammy
+            arch: arm64
+            platform: linux/arm64
+          - distro: ubuntu
+            codename: noble
+            arch: amd64
+            platform: linux/amd64
+          - distro: ubuntu
+            codename: noble
+            arch: arm64
+            platform: linux/arm64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install cargo-deb
-      - run: cargo deb -p llmproxy-server
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.arch == 'arm64'
+        with:
+          platforms: arm64
+      - name: Build .deb
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD:/work" -w /work \
+            -e CARGO_TERM_COLOR=always \
+            -e DEBIAN_FRONTEND=noninteractive \
+            ${{ matrix.distro }}:${{ matrix.codename }} \
+            bash -euxc '
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                curl ca-certificates build-essential pkg-config \
+                libssl-dev dpkg-dev lintian git
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --default-toolchain stable --profile minimal
+              . "$HOME/.cargo/env"
+              cargo install cargo-deb --locked
+              cargo deb -p llmproxy-server --deb-revision "1~${{ matrix.codename }}"
+              lintian --suppress-tags bad-distribution-in-changes-file target/debian/*.deb || true
+            '
+      - name: Tag .deb with distro/codename
+        run: |
+          cd target/debian
+          for f in *.deb; do
+            base="${f%.deb}"
+            mv "$f" "${base}_${{ matrix.distro }}-${{ matrix.codename }}.deb"
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: llmproxy-deb
+          name: deb-${{ matrix.distro }}-${{ matrix.codename }}-${{ matrix.arch }}
           path: target/debian/*.deb
+
+  github-release:
+    needs: [build-binaries, macos-universal, build-deb]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble release files
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # Binaries: one per target directory
+          for d in artifacts/llmproxy-*; do
+            [ -d "$d" ] || continue
+            name=$(basename "$d")
+            if [ -f "$d/llmproxy" ]; then
+              cp "$d/llmproxy" "release/${name}"
+            elif [ -f "$d/llmproxy-universal-apple-darwin" ]; then
+              cp "$d/llmproxy-universal-apple-darwin" "release/"
+            fi
+          done
+          # .debs
+          find artifacts -name '*.deb' -exec cp {} release/ \;
+          ls -la release/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          draft: false
+          generate_release_notes: true
+
+  publish-apt:
+    needs: build-deb
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-apt
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages
+      - uses: actions/download-artifact@v4
+        with:
+          path: debs
+          pattern: deb-*
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y reprepro gnupg gettext-base
+      - name: Import GPG signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APT_GPG_PRIVATE_KEY:-}" ]; then
+            echo "APT_GPG_PRIVATE_KEY secret is not set" >&2
+            exit 1
+          fi
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          echo "allow-loopback-pinentry" > ~/.gnupg/gpg-agent.conf
+          echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
+          gpgconf --kill gpg-agent || true
+          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --yes --import
+          KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')
+          echo "GPG_KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
+          gpg --armor --export "$KEY_ID" > pubkey.asc
+      - name: Prepare apt repository layout
+        env:
+          GPG_KEY_ID: ${{ env.GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          REPO_DIR=gh-pages/apt
+          mkdir -p "$REPO_DIR/conf"
+          envsubst < source/packaging/apt/distributions.template > "$REPO_DIR/conf/distributions"
+          cp pubkey.asc "$REPO_DIR/pubkey.asc"
+          cp source/packaging/apt/index.html "$REPO_DIR/index.html" 2>/dev/null || true
+      - name: Include .debs with reprepro
+        env:
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          cd gh-pages/apt
+          # reprepro invokes gpg non-interactively; pass passphrase via loopback.
+          mkdir -p ~/.gnupg
+          echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
+          for deb in "$GITHUB_WORKSPACE"/debs/deb-*/*.deb; do
+            dir=$(basename "$(dirname "$deb")")
+            # dir format: deb-<distro>-<codename>-<arch>
+            codename=$(echo "$dir" | awk -F- '{print $3}')
+            echo "::group::include $deb into $codename"
+            reprepro --gnupghome "$HOME/.gnupg" \
+              -Vb . \
+              --component main \
+              includedeb "$codename" "$deb"
+            echo "::endgroup::"
+          done
+      - name: Commit and push gh-pages
+        run: |
+          set -euo pipefail
+          cd gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No apt repo changes to publish"
+            exit 0
+          fi
+          git commit -m "Publish ${GITHUB_REF_NAME}"
+          for attempt in 1 2 3 4; do
+            if git push origin gh-pages; then exit 0; fi
+            sleep $((2 ** attempt))
+          done
+          exit 1
+
+  smoke-test-apt:
+    needs: publish-apt
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            codename: bookworm
+          - distro: debian
+            codename: trixie
+          - distro: ubuntu
+            codename: jammy
+          - distro: ubuntu
+            codename: noble
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve Pages URL
+        id: url
+        run: |
+          owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          repo_name="${GITHUB_REPOSITORY##*/}"
+          echo "base=https://${owner_lc}.github.io/${repo_name}/apt" >> "$GITHUB_OUTPUT"
+      - name: Wait for GitHub Pages to serve new repo metadata
+        env:
+          BASE: ${{ steps.url.outputs.base }}
+          CODENAME: ${{ matrix.codename }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsSL "$BASE/dists/$CODENAME/Release" > /dev/null; then
+              echo "Repo metadata is live."
+              exit 0
+            fi
+            echo "Attempt $i: not yet available, sleeping 10s..."
+            sleep 10
+          done
+          echo "Repo metadata did not become available in time" >&2
+          exit 1
+      - name: Install from apt repo
+        env:
+          BASE: ${{ steps.url.outputs.base }}
+        run: |
+          docker run --rm \
+            -e BASE="$BASE" \
+            -e CODENAME="${{ matrix.codename }}" \
+            ${{ matrix.distro }}:${{ matrix.codename }} \
+            bash -euxc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends curl ca-certificates gnupg
+              install -d -m 0755 /etc/apt/keyrings
+              curl -fsSL "$BASE/pubkey.asc" \
+                | gpg --dearmor -o /etc/apt/keyrings/llmproxy.gpg
+              echo "deb [signed-by=/etc/apt/keyrings/llmproxy.gpg] $BASE $CODENAME main" \
+                > /etc/apt/sources.list.d/llmproxy.list
+              apt-get update
+              apt-get install -y llmproxy
+              llmproxy --help
+            '
