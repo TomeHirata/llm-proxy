@@ -32,3 +32,11 @@ providers:
     api_key: ${AZURE_OPENAI_API_KEY}
     endpoint: https://my-resource.openai.azure.com
     api_version: "2024-02-01"
+
+# Persistent request/response log with per-request metrics and token usage.
+# Opt-in because captured prompts/responses may contain sensitive content.
+usage_log:
+  enabled: false
+  retention_days: 30
+  # Only `${ENV_VAR}` interpolation is applied — `~` is not expanded.
+  # path: ${HOME}/.local/share/llmproxy/usage.sqlite
