@@ -134,7 +134,11 @@ fn main() -> anyhow::Result<()> {
         },
         Command::Usage(sub) => match sub {
             UsageSub::Summary { config, since } => usage_summary(config.as_deref(), &since),
-            UsageSub::Recent { config, limit, verbose } => usage_recent(config.as_deref(), limit, verbose),
+            UsageSub::Recent {
+                config,
+                limit,
+                verbose,
+            } => usage_recent(config.as_deref(), limit, verbose),
             UsageSub::Prune { config } => usage_prune(config.as_deref()),
         },
     }
