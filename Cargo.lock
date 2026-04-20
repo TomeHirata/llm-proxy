@@ -1270,6 +1270,7 @@ dependencies = [
  "llmproxy-core",
  "llmproxy-providers",
  "regex",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

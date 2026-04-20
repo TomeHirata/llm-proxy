@@ -103,6 +103,14 @@ impl ProviderRegistry {
         Ok((Arc::clone(provider), model_id.to_string(), cred))
     }
 
+    pub fn credential_for(
+        &self,
+        provider_name: &str,
+        auth_header: Option<&str>,
+    ) -> Result<Credential, ProxyError> {
+        self.resolve_credential(provider_name, auth_header)
+    }
+
     fn resolve_credential(
         &self,
         provider_name: &str,

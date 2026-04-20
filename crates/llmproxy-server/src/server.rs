@@ -2,7 +2,7 @@ use std::{convert::Infallible, sync::Arc, time::Instant};
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -24,6 +24,7 @@ use crate::{
 pub struct AppState {
     pub registry: Arc<ProviderRegistry>,
     pub usage_store: Option<UsageStore>,
+    pub http: reqwest::Client,
     /// Per-entry cap on captured request/response bodies. Bodies longer than
     /// this are truncated with a `… [truncated N bytes]` marker so one huge
     /// response can't OOM the server.
@@ -50,6 +51,13 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_handler))
         .route("/v1/models", get(models_handler))
         .route("/health", get(health_handler))
+        // Native provider passthroughs — no translation, body forwarded as-is.
+        .route("/openai/v1/responses", post(openai_responses_handler))
+        .route("/anthropic/v1/messages", post(anthropic_messages_handler))
+        .route(
+            "/gemini/v1beta/models/:model_id/generateContent",
+            post(gemini_generate_content_handler),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -191,6 +199,144 @@ async fn models_handler(State(state): State<AppState>) -> Json<serde_json::Value
         })
         .collect();
     Json(json!({ "object": "list", "data": models }))
+}
+
+/// Forward a request body to `url` as-is, injecting `extra_headers`, and
+/// stream the upstream response back to the caller verbatim.
+async fn native_forward(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    extra_headers: reqwest::header::HeaderMap,
+    body: Bytes,
+) -> Response {
+    let upstream = match client
+        .post(url)
+        .headers(extra_headers)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("upstream request failed: {e}");
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"error": {"message": msg, "type": "proxy_error"}}).to_string(),
+                ))
+                .unwrap();
+        }
+    };
+
+    let status = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+
+    let byte_stream = upstream.bytes_stream().map(|r| {
+        r.map_err(|e| {
+            tracing::warn!("stream error: {e}");
+            e
+        })
+    });
+
+    Response::builder()
+        .status(status)
+        .header("content-type", content_type)
+        .body(Body::from_stream(byte_stream))
+        .unwrap()
+}
+
+async fn openai_responses_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let cred = match state.registry.credential_for("openai", auth.as_deref()) {
+        Ok(c) => c,
+        Err(e) => return proxy_error_to_response(&e),
+    };
+    let token = match cred {
+        llmproxy_core::provider::Credential::BearerToken(t) => t,
+        _ => {
+            return proxy_error_to_response(&ProxyError::Config(
+                "openai requires a bearer token".into(),
+            ))
+        }
+    };
+    let mut extra = reqwest::header::HeaderMap::new();
+    extra.insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    let url = reqwest::Url::parse("https://api.openai.com/v1/responses").unwrap();
+    native_forward(&state.http, url, extra, body).await
+}
+
+async fn anthropic_messages_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let cred = match state.registry.credential_for("anthropic", auth.as_deref()) {
+        Ok(c) => c,
+        Err(e) => return proxy_error_to_response(&e),
+    };
+    let token = match cred {
+        llmproxy_core::provider::Credential::BearerToken(t) => t,
+        _ => {
+            return proxy_error_to_response(&ProxyError::Config(
+                "anthropic requires a bearer token".into(),
+            ))
+        }
+    };
+    let mut extra = reqwest::header::HeaderMap::new();
+    extra.insert("x-api-key", token.parse().unwrap());
+    extra.insert("anthropic-version", "2023-06-01".parse().unwrap());
+    let url = reqwest::Url::parse("https://api.anthropic.com/v1/messages").unwrap();
+    native_forward(&state.http, url, extra, body).await
+}
+
+async fn gemini_generate_content_handler(
+    State(state): State<AppState>,
+    Path(model_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let cred = match state.registry.credential_for("gemini", auth.as_deref()) {
+        Ok(c) => c,
+        Err(e) => return proxy_error_to_response(&e),
+    };
+    let token = match cred {
+        llmproxy_core::provider::Credential::BearerToken(t) => t,
+        _ => {
+            return proxy_error_to_response(&ProxyError::Config(
+                "gemini requires a bearer token".into(),
+            ))
+        }
+    };
+    let url = reqwest::Url::parse(&format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={token}"
+    ))
+    .unwrap();
+    native_forward(&state.http, url, reqwest::header::HeaderMap::new(), body).await
 }
 
 fn proxy_error_to_response(err: &ProxyError) -> Response {
