@@ -201,25 +201,73 @@ async fn models_handler(State(state): State<AppState>) -> Json<serde_json::Value
     Json(json!({ "object": "list", "data": models }))
 }
 
-/// Forward a request body to `url` as-is, injecting `extra_headers`, and
-/// stream the upstream response back to the caller verbatim.
+/// Headers from the caller that are safe to forward to upstream providers.
+/// Auth and hop-by-hop headers are excluded; provider-specific beta/org
+/// headers are included so callers can use native provider features.
+fn should_forward_request_header(name: &axum::http::header::HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "accept"
+            | "content-type"
+            | "anthropic-beta"
+            | "anthropic-version"
+            | "openai-beta"
+            | "openai-organization"
+            | "openai-project"
+            | "x-request-id"
+    )
+}
+
+/// Merge forwarded caller headers with injected auth/provider headers.
+/// Injected headers take precedence over forwarded ones.
+fn build_upstream_headers(
+    incoming: &HeaderMap,
+    injected: reqwest::header::HeaderMap,
+) -> reqwest::header::HeaderMap {
+    let mut out = reqwest::header::HeaderMap::new();
+    for (name, value) in incoming {
+        if should_forward_request_header(name) {
+            if let (Ok(n), Ok(v)) = (
+                reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()),
+                reqwest::header::HeaderValue::from_bytes(value.as_bytes()),
+            ) {
+                out.append(n, v);
+            }
+        }
+    }
+    out.extend(injected);
+    if !out.contains_key(reqwest::header::CONTENT_TYPE) {
+        out.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+    }
+    out
+}
+
+/// Forward a request body to `url` as-is and stream the upstream response back
+/// verbatim. `injected` headers (auth etc.) are layered on top of any
+/// forwarded caller headers.
 async fn native_forward(
     client: &reqwest::Client,
     url: reqwest::Url,
-    extra_headers: reqwest::header::HeaderMap,
+    incoming: &HeaderMap,
+    injected: reqwest::header::HeaderMap,
     body: Bytes,
 ) -> Response {
+    let upstream_headers = build_upstream_headers(incoming, injected);
     let upstream = match client
         .post(url)
-        .headers(extra_headers)
-        .header("content-type", "application/json")
+        .headers(upstream_headers)
         .body(body)
         .send()
         .await
     {
         Ok(r) => r,
         Err(e) => {
-            let msg = format!("upstream request failed: {e}");
+            // Avoid including the full URL in the message — it may contain an
+            // API key as a query parameter (e.g. Gemini ?key=...).
+            let msg = format!("upstream request failed: {}", e.without_url());
             return Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .header("content-type", "application/json")
@@ -252,6 +300,14 @@ async fn native_forward(
         .unwrap()
 }
 
+fn make_header_value(s: &str) -> Result<reqwest::header::HeaderValue, Response> {
+    reqwest::header::HeaderValue::from_str(s).map_err(|_| {
+        proxy_error_to_response(&ProxyError::Config(
+            "credential contains invalid header characters".into(),
+        ))
+    })
+}
+
 async fn openai_responses_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -273,13 +329,14 @@ async fn openai_responses_handler(
             ))
         }
     };
-    let mut extra = reqwest::header::HeaderMap::new();
-    extra.insert(
-        reqwest::header::AUTHORIZATION,
-        format!("Bearer {token}").parse().unwrap(),
-    );
+    let bearer = match make_header_value(&format!("Bearer {token}")) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let mut injected = reqwest::header::HeaderMap::new();
+    injected.insert(reqwest::header::AUTHORIZATION, bearer);
     let url = reqwest::Url::parse("https://api.openai.com/v1/responses").unwrap();
-    native_forward(&state.http, url, extra, body).await
+    native_forward(&state.http, url, &headers, injected, body).await
 }
 
 async fn anthropic_messages_handler(
@@ -303,11 +360,18 @@ async fn anthropic_messages_handler(
             ))
         }
     };
-    let mut extra = reqwest::header::HeaderMap::new();
-    extra.insert("x-api-key", token.parse().unwrap());
-    extra.insert("anthropic-version", "2023-06-01".parse().unwrap());
+    let api_key = match make_header_value(&token) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let mut injected = reqwest::header::HeaderMap::new();
+    injected.insert("x-api-key", api_key);
+    // Only inject anthropic-version if the caller didn't already set it.
+    injected
+        .entry("anthropic-version")
+        .or_insert_with(|| reqwest::header::HeaderValue::from_static("2023-06-01"));
     let url = reqwest::Url::parse("https://api.anthropic.com/v1/messages").unwrap();
-    native_forward(&state.http, url, extra, body).await
+    native_forward(&state.http, url, &headers, injected, body).await
 }
 
 async fn gemini_generate_content_handler(
@@ -332,11 +396,23 @@ async fn gemini_generate_content_handler(
             ))
         }
     };
-    let url = reqwest::Url::parse(&format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={token}"
-    ))
-    .unwrap();
-    native_forward(&state.http, url, reqwest::header::HeaderMap::new(), body).await
+    // Build URL with percent-encoded path segments and query param so that
+    // model IDs or keys with special characters are handled correctly, and
+    // the key is never interpolated into a string that could appear in logs.
+    let mut url =
+        reqwest::Url::parse("https://generativelanguage.googleapis.com/v1beta/models/").unwrap();
+    url.path_segments_mut()
+        .unwrap()
+        .push(&format!("{model_id}:generateContent"));
+    url.query_pairs_mut().append_pair("key", &token);
+    native_forward(
+        &state.http,
+        url,
+        &headers,
+        reqwest::header::HeaderMap::new(),
+        body,
+    )
+    .await
 }
 
 fn proxy_error_to_response(err: &ProxyError) -> Response {
@@ -604,6 +680,163 @@ fn last_usage_from_sse(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use tower::ServiceExt;
+
+    /// Minimal AppState wired to a real (but unconfigured) registry so the
+    /// credential-missing path returns 401 without hitting any upstream.
+    fn state_no_creds() -> AppState {
+        use crate::{config::AppConfig, registry::ProviderRegistry};
+        AppState {
+            registry: std::sync::Arc::new(ProviderRegistry::from_config(&AppConfig::default())),
+            usage_store: None,
+            http: reqwest::Client::new(),
+            max_body_bytes: 1024,
+        }
+    }
+
+    async fn body_str(body: axum::body::Body) -> String {
+        let b = to_bytes(body, usize::MAX).await.unwrap();
+        String::from_utf8_lossy(&b).to_string()
+    }
+
+    #[tokio::test]
+    async fn openai_missing_cred_returns_401() {
+        let app = router(state_no_creds());
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/openai/v1/responses")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn anthropic_missing_cred_returns_401() {
+        let app = router(state_no_creds());
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/anthropic/v1/messages")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn gemini_missing_cred_returns_401() {
+        let app = router(state_no_creds());
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/gemini/v1beta/models/gemini-2.0-flash/generateContent")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn native_forward_mirrors_status_and_content_type() {
+        // Spin up a tiny local HTTP server that returns a known status + body.
+        let mock = axum::Router::new().route(
+            "/echo",
+            axum::routing::post(|| async {
+                (
+                    axum::http::StatusCode::CREATED,
+                    [("content-type", "text/plain")],
+                    "hello",
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let url = reqwest::Url::parse(&format!("http://{addr}/echo")).unwrap();
+        let resp = native_forward(
+            &client,
+            url,
+            &HeaderMap::new(),
+            reqwest::header::HeaderMap::new(),
+            Bytes::from("{}"),
+        )
+        .await;
+
+        assert_eq!(resp.status(), 201);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain")
+        );
+        assert_eq!(body_str(resp.into_body()).await, "hello");
+    }
+
+    #[tokio::test]
+    async fn native_forward_streams_chunked_body() {
+        use futures::stream;
+        let mock = axum::Router::new().route(
+            "/stream",
+            axum::routing::post(|| async {
+                let chunks: Vec<Result<String, std::convert::Infallible>> =
+                    vec![Ok("chunk1".into()), Ok("chunk2".into())];
+                axum::response::Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(axum::body::Body::from_stream(stream::iter(chunks)))
+                    .unwrap()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let url = reqwest::Url::parse(&format!("http://{addr}/stream")).unwrap();
+        let resp = native_forward(
+            &client,
+            url,
+            &HeaderMap::new(),
+            reqwest::header::HeaderMap::new(),
+            Bytes::from("{}"),
+        )
+        .await;
+
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+        assert_eq!(body_str(resp.into_body()).await, "chunk1chunk2");
+    }
+
+    #[test]
+    fn should_forward_allowlist() {
+        use axum::http::header::HeaderName;
+        use std::str::FromStr;
+        assert!(should_forward_request_header(
+            &HeaderName::from_str("anthropic-beta").unwrap()
+        ));
+        assert!(should_forward_request_header(
+            &HeaderName::from_str("openai-organization").unwrap()
+        ));
+        assert!(!should_forward_request_header(
+            &HeaderName::from_str("authorization").unwrap()
+        ));
+        assert!(!should_forward_request_header(
+            &HeaderName::from_str("host").unwrap()
+        ));
+    }
 
     #[test]
     fn last_usage_picks_terminal_chunk() {
