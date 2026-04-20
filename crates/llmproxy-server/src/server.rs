@@ -300,11 +300,11 @@ async fn native_forward(
         .unwrap()
 }
 
-fn make_header_value(s: &str) -> Result<reqwest::header::HeaderValue, Response> {
+fn make_header_value(s: &str) -> Result<reqwest::header::HeaderValue, Box<Response>> {
     reqwest::header::HeaderValue::from_str(s).map_err(|_| {
-        proxy_error_to_response(&ProxyError::Config(
+        Box::new(proxy_error_to_response(&ProxyError::Config(
             "credential contains invalid header characters".into(),
-        ))
+        )))
     })
 }
 
@@ -331,7 +331,7 @@ async fn openai_responses_handler(
     };
     let bearer = match make_header_value(&format!("Bearer {token}")) {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let mut injected = reqwest::header::HeaderMap::new();
     injected.insert(reqwest::header::AUTHORIZATION, bearer);
@@ -362,7 +362,7 @@ async fn anthropic_messages_handler(
     };
     let api_key = match make_header_value(&token) {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let mut injected = reqwest::header::HeaderMap::new();
     injected.insert("x-api-key", api_key);
