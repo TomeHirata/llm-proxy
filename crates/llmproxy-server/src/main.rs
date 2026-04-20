@@ -73,6 +73,9 @@ enum UsageSub {
         config: Option<String>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Also print raw request and response bodies.
+        #[arg(long, short)]
+        verbose: bool,
     },
     /// Run a one-shot retention prune now and exit.
     Prune {
@@ -131,7 +134,7 @@ fn main() -> anyhow::Result<()> {
         },
         Command::Usage(sub) => match sub {
             UsageSub::Summary { config, since } => usage_summary(config.as_deref(), &since),
-            UsageSub::Recent { config, limit } => usage_recent(config.as_deref(), limit),
+            UsageSub::Recent { config, limit, verbose } => usage_recent(config.as_deref(), limit, verbose),
             UsageSub::Prune { config } => usage_prune(config.as_deref()),
         },
     }
@@ -607,7 +610,7 @@ fn usage_summary(config_path: Option<&str>, since: &str) -> anyhow::Result<()> {
     })
 }
 
-fn usage_recent(config_path: Option<&str>, limit: usize) -> anyhow::Result<()> {
+fn usage_recent(config_path: Option<&str>, limit: usize, verbose: bool) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
     let rt = tokio_runtime()?;
     rt.block_on(async move {
@@ -630,6 +633,17 @@ fn usage_recent(config_path: Option<&str>, limit: usize) -> anyhow::Result<()> {
                     .map(|v| v.to_string())
                     .unwrap_or_default(),
             );
+            if verbose {
+                let req = serde_json::from_str::<serde_json::Value>(&e.request_body)
+                    .map(|v| serde_json::to_string_pretty(&v).unwrap_or(e.request_body.clone()))
+                    .unwrap_or(e.request_body.clone());
+                let resp = serde_json::from_str::<serde_json::Value>(&e.response_body)
+                    .map(|v| serde_json::to_string_pretty(&v).unwrap_or(e.response_body.clone()))
+                    .unwrap_or(e.response_body.clone());
+                println!("  request:  {req}");
+                println!("  response: {resp}");
+                println!();
+            }
         }
         anyhow::Ok(())
     })
