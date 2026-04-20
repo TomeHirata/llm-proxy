@@ -31,10 +31,12 @@ rusqlite    = { version = "0.31", features = ["bundled"] }
 chrono      = { workspace = true }
 uuid        = { workspace = true }
 humantime   = "2"
+reqwest     = { workspace = true }
 
 [dev-dependencies]
 serial_test = "3"
 tempfile    = "3"
+tower       = { version = "0.4", features = ["util"] }
 
 [package.metadata.deb]
 assets = [

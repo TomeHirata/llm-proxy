@@ -186,6 +186,7 @@ async fn run_server(cfg: AppConfig) -> anyhow::Result<()> {
     let state = AppState {
         registry,
         usage_store,
+        http: reqwest::Client::new(),
         max_body_bytes: cfg.usage_log.max_body_bytes,
     };
     let app = router(state);
