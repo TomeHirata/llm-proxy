@@ -1289,6 +1289,9 @@ llmproxy install            # install as launchd agent (macOS) or systemd unit (
 llmproxy uninstall          # remove the autostart agent/unit
 llmproxy config init        # scaffold ~/.config/llmproxy/config.yaml
 llmproxy config show        # print resolved config (secrets redacted to ***)
+llmproxy usage summary      # aggregate stats from the persistent usage log (see §17)
+llmproxy usage recent       # most recent usage log entries
+llmproxy usage prune        # one-shot retention cleanup
 ```
 
 **`llmproxy providers` output example:**
@@ -1309,9 +1312,10 @@ Configured providers:
 | Phase | Scope |
 |-------|-------|
 | **v0.1** | OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral. Chat + streaming. `provider/model` routing. Daemon mode + `install`/`uninstall` for macOS launchd and Linux systemd. `.deb` + Homebrew. |
+| **v0.1.x** | **Persistent usage log + metrics** (SQLite-backed, opt-in) and `llmproxy usage {summary,recent,prune}` CLI (see §17). |
 | **v0.2** | + Cohere, TogetherAI, HuggingFace TGI. Embeddings endpoint (`/v1/embeddings`). |
 | **v0.3** | + MLflow Model Serving, AI21Labs. |
-| **v1.0** | Request log to JSONL. Tool call passthrough for all translation providers. |
+| **v1.0** | Tool call passthrough for all translation providers. |
 
 ---
 
@@ -1700,3 +1704,251 @@ The Homebrew formula's `service` block (§9) runs `llmproxy serve` directly
 (not `--daemon`) because Homebrew manages the process lifecycle itself via
 launchd. When installed via Homebrew, users run `brew services start llmproxy`
 instead of `llmproxy install`.
+
+---
+
+## 17. Usage Log & Metrics
+
+> **Ships in v0.1.x.** The original roadmap listed a v1.0 "request log to
+> JSONL" item — we replaced that with a SQLite-backed log because aggregate
+> queries (latency percentiles, per-provider token totals) are the primary
+> use case and `jq` over a growing JSONL file does not scale. The log is
+> **opt-in** because captured prompts/responses may contain PII/secrets.
+
+### 17.1 Goals
+
+- Persist one row per chat-completion request so users can audit traffic,
+  compare providers, and catch regressions.
+- Expose simple CLI queries (`summary`, `recent`, `prune`) without requiring
+  users to know SQL or install a client.
+- Auto-expire rows past a retention window so the file does not grow
+  unboundedly on a laptop.
+- Never stall request handling on disk I/O.
+
+### 17.2 Non-goals (for this slice)
+
+- No cross-machine aggregation / metrics export to Prometheus. A user can
+  always `COPY` rows out of SQLite or `ATTACH` the file.
+- No redaction / PII scrubbing. If this matters for a given user they should
+  leave the log disabled.
+- No streaming mid-flight ingestion: we only write once a request completes
+  (or is cancelled).
+
+### 17.3 Config surface
+
+```yaml
+usage_log:
+  enabled: false              # opt-in
+  retention_days: 30          # background prune cutoff
+  max_body_bytes: 1048576     # per-entry body cap (default 1 MiB)
+  # path: ${HOME}/.local/share/llmproxy/usage.sqlite
+```
+
+Only `${ENV_VAR}` interpolation is performed on `path`; `~` is **not**
+expanded (a surprise during review on PR #2, fixed by the current docs).
+
+### 17.4 Storage: SQLite
+
+Single file, WAL journal mode, `synchronous = NORMAL`, `busy_timeout = 5s`
+on every connection so concurrent writer / reader / prune calls block-and-
+retry instead of returning `SQLITE_BUSY`.
+
+Schema:
+
+```sql
+CREATE TABLE usage_log (
+    id                TEXT PRIMARY KEY,   -- uuid v4
+    created_at        TEXT NOT NULL,      -- RFC-3339 UTC
+    provider          TEXT NOT NULL,      -- "openai", "anthropic", ...
+    model_id          TEXT NOT NULL,      -- native model id after "/" split
+    status            INTEGER NOT NULL,   -- HTTP status (200, 401, 502, 499, ...)
+    latency_ms        INTEGER NOT NULL,
+    prompt_tokens     INTEGER,            -- parsed from response body
+    completion_tokens INTEGER,
+    total_tokens      INTEGER,
+    stream            INTEGER NOT NULL,   -- 0/1
+    request_body      TEXT NOT NULL,      -- truncated to max_body_bytes
+    response_body     TEXT NOT NULL,      -- same
+    error             TEXT                -- ProxyError rendering, if any
+);
+CREATE INDEX idx_usage_created         ON usage_log (created_at);
+CREATE INDEX idx_usage_provider_model  ON usage_log (provider, model_id, created_at);
+```
+
+Rows are written via `INSERT OR REPLACE` keyed on `id` so a double-record
+attempt (e.g. re-entering `Drop`) is idempotent.
+
+### 17.5 Write path — never block a handler
+
+Writes go through a bounded `tokio::sync::mpsc::Sender<UsageEntry>` with
+capacity **1024**. The request handler calls `try_send`: if the channel is
+full it **drops** the entry and emits a `tracing::warn!`. Dropping on
+back-pressure is the right call for a non-load-bearing log; back-pressuring
+every request handler on sqlite I/O is not.
+
+The consumer runs on a **dedicated OS thread** (`std::thread::Builder`,
+named `usage-log-writer`) and calls `rx.blocking_recv()` in a loop. This
+avoids putting synchronous rusqlite calls on tokio worker threads, which
+would stall request handling under load. A second `Connection` dedicated to
+the writer prevents contention with reader queries issued by `summary` /
+`recent` / `prune`.
+
+```
+          ┌─────────────┐      try_send      ┌─────────────────────┐
+request → │  handler    │ ─────────────────► │ mpsc::channel(1024) │
+          └─────────────┘                    └──────────┬──────────┘
+                                                        │ blocking_recv
+                                                        ▼
+                                           std::thread "usage-log-writer"
+                                           rusqlite::Connection (writer)
+```
+
+### 17.6 Capturing bodies
+
+#### Non-streaming
+
+The handler has the full response in hand; we `serde_json::to_string(&resp)`,
+run `extract_tokens` on it, then record the entry. Bodies longer than
+`max_body_bytes` are trimmed via `truncate_body()`, which appends
+`… [truncated N bytes]` so the persisted field is obviously incomplete and
+the dropped-byte count is recoverable.
+
+#### Streaming
+
+Axum does not expose a "response finished" hook for streaming bodies, so we
+wrap the SSE byte stream in a `FinalizedStream<S>` adapter that:
+
+1. Buffers bytes up to `max_body_bytes` (excess is counted but discarded).
+2. Scans each chunk for `"error":` and `data: [DONE]` markers to set
+   `saw_error` / `saw_done` flags (we look at the raw bytes so the markers
+   aren't missed when the buffer is already full).
+3. On `Drop`, assembles the buffered bytes, parses `last_usage_from_sse()`
+   for token counts, chooses a status:
+    - `saw_error` → **502**, `error = "upstream stream error"`
+    - `!saw_done` → **499**, `error = "client disconnected before [DONE]"`
+    - otherwise → **200**, `error = None`
+4. Submits the resulting `UsageEntry` to the writer channel.
+
+Dropping on the stream (rather than the response) means we still log
+requests where the client disconnects early.
+
+```rust
+fn last_usage_from_sse(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
+    // Scan every `data: {...}` line; the *last* one bearing a `usage` object
+    // wins (OpenAI emits it only in the terminal chunk).
+}
+```
+
+### 17.7 Token extraction
+
+Tokens are parsed directly from the persisted response body — no separate
+pipeline — so the extractor handles both native OpenAI payloads and bodies
+translated back into OpenAI shape by `AnthropicProvider` / `GeminiProvider`
+/ `BedrockProvider`. The extractor is deliberately lenient:
+
+```rust
+pub fn extract_tokens(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
+    let Ok(v) = serde_json::from_str::<Value>(body) else { return (None, None, None); };
+    let g = |k| v["usage"][k].as_i64();
+    (g("prompt_tokens"), g("completion_tokens"), g("total_tokens"))
+}
+```
+
+For SSE the same shape is expected inside any terminal `data: {...}` chunk.
+
+### 17.8 Retention
+
+A background tokio task runs `prune(retention)` on an hourly interval with
+`MissedTickBehavior::Delay` so a long-stalled system doesn't do a thundering
+sweep. The prune is a single `DELETE FROM usage_log WHERE created_at < ?1`.
+Users can run `llmproxy usage prune` on demand.
+
+### 17.9 Query API — `llmproxy usage summary`
+
+Per-(provider, model) aggregation is a **single** SQL statement using
+window functions (`ROW_NUMBER() / COUNT() OVER (PARTITION BY ...)`) to
+compute p50 and p95 in the same pass as `count / success_count / avg_latency
+/ token totals`. This replaced an N+1 helper that issued three extra
+queries per group on an earlier draft.
+
+```sql
+WITH filtered AS (
+    SELECT provider, model_id, status, latency_ms, prompt_tokens, completion_tokens
+    FROM usage_log WHERE created_at >= ?1
+),
+ranked AS (
+    SELECT provider, model_id, latency_ms,
+           ROW_NUMBER() OVER (PARTITION BY provider, model_id ORDER BY latency_ms) AS rn,
+           COUNT(*)     OVER (PARTITION BY provider, model_id) AS cnt
+    FROM filtered
+),
+aggregated AS (
+    SELECT provider, model_id,
+           COUNT(*)                                                   AS count,
+           SUM(CASE WHEN status BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS ok,
+           COALESCE(AVG(latency_ms), 0.0)                             AS avg_lat,
+           COALESCE(SUM(prompt_tokens), 0)                            AS pt,
+           COALESCE(SUM(completion_tokens), 0)                        AS ct
+    FROM filtered GROUP BY provider, model_id
+),
+pct AS (
+    SELECT provider, model_id,
+           MIN(CASE WHEN rn >= ((cnt + 1) / 2)         THEN latency_ms END) AS p50,
+           MIN(CASE WHEN rn >= ((cnt * 95 + 99) / 100) THEN latency_ms END) AS p95
+    FROM ranked GROUP BY provider, model_id
+)
+SELECT a.provider, a.model_id, a.count, a.ok, a.avg_lat,
+       COALESCE(p.p50, 0), COALESCE(p.p95, 0), a.pt, a.ct
+FROM aggregated a LEFT JOIN pct p USING (provider, model_id)
+ORDER BY a.count DESC;
+```
+
+`--since` accepts the shorthand `7d`, `2w` plus anything `humantime`
+understands (`10ms`, `2h 30min`, `1hour 5min`, …) — the custom parser only
+handles the units `humantime` does not (`d`/`w`), everything else falls
+through.
+
+### 17.10 Privacy / safety posture
+
+- **Opt-in.** Default config has `enabled: false`.
+- **`Authorization` header is never persisted** — it is only consumed by
+  `registry::resolve()` and thrown away.
+- **Body cap** bounds a single runaway response's memory use at
+  `max_body_bytes`.
+- When tokens come out of a cap-truncated body, token fields are `NULL`
+  rather than parsed from a partial JSON document.
+
+### 17.11 Dependencies
+
+Net new crates in `llmproxy-server`:
+
+```toml
+rusqlite  = { version = "0.31", features = ["bundled"] }   # no system libsqlite needed
+humantime = "2"                                            # duration parsing
+tempfile  = "3"                                            # dev-dep for tests
+chrono    = { workspace = true }
+uuid      = { workspace = true }
+```
+
+### 17.12 Testing strategy
+
+- `UsageStore::open` + record + summary against a `tempdir()` database
+  (async round-trip with a small sleep for the writer thread).
+- `prune` on two-row dataset with one row outside retention.
+- `parse_since` cases: `7d`, `24h`, `30m`, `2w`, `10ms`, `2h 30min`, garbage.
+- `truncate_body` over/under cap, plus SSE helpers:
+  `last_usage_from_sse` picks the terminal chunk, returns `None` when
+  absent.
+
+### 17.13 Follow-ups (future PRs)
+
+- Expose `max_body_bytes` in CLI output summary so users know why a
+  response is truncated.
+- Optional PII redaction (regex-based field stripping) as a middleware
+  applied before bodies are buffered.
+- Export command (`llmproxy usage export --format jsonl` / `csv`) for
+  feeding into external pipelines.
+- Bedrock streaming support will add a code path whose body-capture shape
+  differs (binary event-stream → translated OpenAI SSE); the existing
+  `FinalizedStream` already handles assembled OpenAI SSE so the capture
+  side should require no changes.
