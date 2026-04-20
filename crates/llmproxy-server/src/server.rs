@@ -24,6 +24,25 @@ use crate::{
 pub struct AppState {
     pub registry: Arc<ProviderRegistry>,
     pub usage_store: Option<UsageStore>,
+    /// Per-entry cap on captured request/response bodies. Bodies longer than
+    /// this are truncated with a `… [truncated N bytes]` marker so one huge
+    /// response can't OOM the server.
+    pub max_body_bytes: usize,
+}
+
+/// Truncate an already-UTF-8 string to at most `limit` bytes, appending a
+/// marker if anything was dropped. Falls back to `String::from_utf8_lossy` if
+/// the cut lands mid-codepoint.
+fn truncate_body(s: String, limit: usize) -> String {
+    if s.len() <= limit {
+        return s;
+    }
+    let dropped = s.len() - limit;
+    let mut head = s.into_bytes();
+    head.truncate(limit);
+    let head = String::from_utf8(head)
+        .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned());
+    format!("{head}… [truncated {dropped} bytes]")
 }
 
 pub fn router(state: AppState) -> Router {
@@ -97,6 +116,7 @@ async fn chat_handler(State(state): State<AppState>, headers: HeaderMap, body: B
                     model_id: model_for_log,
                     request_body: raw_request,
                     started,
+                    max_body_bytes: state.max_body_bytes,
                 };
                 let body = Body::from_stream(FinalizedStream::new(byte_stream, finalizer));
                 Response::builder()
@@ -235,8 +255,8 @@ fn record_entry(
         completion_tokens,
         total_tokens,
         stream,
-        request_body: request_body.to_string(),
-        response_body: response_body.to_string(),
+        request_body: truncate_body(request_body.to_string(), state.max_body_bytes),
+        response_body: truncate_body(response_body.to_string(), state.max_body_bytes),
         error,
     });
 }
@@ -285,18 +305,27 @@ struct StreamFinalizer {
     model_id: String,
     request_body: String,
     started: Instant,
+    max_body_bytes: usize,
 }
 
 /// A stream adapter that buffers every chunk it yields and, when the inner
 /// stream ends, writes a usage log entry.
 ///
-/// This is how we record streaming requests — axum's `Sse` doesn't expose a
-/// "response finished" hook, so we wrap the body stream itself and write
-/// the entry from `Drop`. Using `Drop` on the stream (not the response)
-/// means we also record early-terminated connections.
+/// Axum doesn't expose a "response finished" hook for streaming bodies, so we
+/// wrap the body stream itself and record from `Drop`. Dropping on the stream
+/// (not the response) means we also log early-terminated connections.
+///
+/// The buffer is capped at `max_body_bytes`; further bytes are accounted for
+/// via `dropped_bytes` and only a truncation marker is persisted.
 struct FinalizedStream<S> {
     inner: S,
     buf: Vec<u8>,
+    dropped_bytes: usize,
+    /// True if the server ever emitted a synthesized error chunk for this
+    /// stream (upstream yielded `Err`).
+    saw_error: bool,
+    /// True if we saw the terminating `data: [DONE]` marker.
+    saw_done: bool,
     finalizer: Option<StreamFinalizer>,
 }
 
@@ -305,7 +334,26 @@ impl<S> FinalizedStream<S> {
         Self {
             inner,
             buf: Vec::new(),
+            dropped_bytes: 0,
+            saw_error: false,
+            saw_done: false,
             finalizer: Some(finalizer),
+        }
+    }
+
+    fn absorb(&mut self, chunk: &[u8]) {
+        let cap = self
+            .finalizer
+            .as_ref()
+            .map(|f| f.max_body_bytes)
+            .unwrap_or(0);
+        let room = cap.saturating_sub(self.buf.len());
+        if room > 0 {
+            let take = chunk.len().min(room);
+            self.buf.extend_from_slice(&chunk[..take]);
+            self.dropped_bytes = self.dropped_bytes.saturating_add(chunk.len() - take);
+        } else {
+            self.dropped_bytes = self.dropped_bytes.saturating_add(chunk.len());
         }
     }
 }
@@ -318,14 +366,29 @@ impl<S> Drop for FinalizedStream<S> {
         let Some(store) = f.store else {
             return;
         };
-        let assembled = String::from_utf8_lossy(&self.buf).into_owned();
+        let mut assembled = String::from_utf8_lossy(&self.buf).into_owned();
+        if self.dropped_bytes > 0 {
+            assembled.push_str(&format!("… [truncated {} bytes]", self.dropped_bytes));
+        }
         let tokens = last_usage_from_sse(&assembled);
+
+        // If we emitted a synthesized error chunk or the stream ended without
+        // a `[DONE]` marker, treat it as a failure so success-rate metrics
+        // aren't skewed.
+        let (status, error) = if self.saw_error {
+            (502, Some("upstream stream error".into()))
+        } else if !self.saw_done {
+            (499, Some("client disconnected before [DONE]".into()))
+        } else {
+            (200, None)
+        };
+
         store.record(UsageEntry {
             id: uuid::Uuid::new_v4().to_string(),
             created_at: Utc::now(),
             provider: f.provider,
             model_id: f.model_id,
-            status: 200,
+            status,
             latency_ms: f.started.elapsed().as_millis() as i64,
             prompt_tokens: tokens.0,
             completion_tokens: tokens.1,
@@ -333,7 +396,7 @@ impl<S> Drop for FinalizedStream<S> {
             stream: true,
             request_body: f.request_body,
             response_body: assembled,
-            error: None,
+            error,
         });
     }
 }
@@ -350,7 +413,17 @@ where
     ) -> std::task::Poll<Option<Self::Item>> {
         let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
         if let std::task::Poll::Ready(Some(Ok(b))) = &poll {
-            self.buf.extend_from_slice(b);
+            // Track error/terminator markers before buffering so we don't
+            // miss them when the body is large enough to hit the cap.
+            let s = std::str::from_utf8(b).unwrap_or("");
+            if s.contains("\"error\":") {
+                self.saw_error = true;
+            }
+            if s.contains("data: [DONE]") {
+                self.saw_done = true;
+            }
+            let chunk = b.clone();
+            self.absorb(&chunk);
         }
         poll
     }
@@ -399,5 +472,18 @@ mod tests {
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
                     data: [DONE]\n\n";
         assert_eq!(last_usage_from_sse(body), (None, None, None));
+    }
+
+    #[test]
+    fn truncate_body_adds_marker_when_over_cap() {
+        let out = truncate_body("x".repeat(200), 50);
+        assert!(out.starts_with(&"x".repeat(50)));
+        assert!(out.contains("[truncated 150 bytes]"));
+    }
+
+    #[test]
+    fn truncate_body_unchanged_under_cap() {
+        let out = truncate_body("hello".into(), 50);
+        assert_eq!(out, "hello");
     }
 }

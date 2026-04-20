@@ -179,6 +179,7 @@ async fn run_server(cfg: AppConfig) -> anyhow::Result<()> {
     let state = AppState {
         registry,
         usage_store,
+        max_body_bytes: cfg.usage_log.max_body_bytes,
     };
     let app = router(state);
 
@@ -685,5 +686,5 @@ providers:
 usage_log:
   enabled: false
   retention_days: 30
-  # path: ~/.local/share/llmproxy/usage.sqlite
+  # path: ${HOME}/.local/share/llmproxy/usage.sqlite
 "#;

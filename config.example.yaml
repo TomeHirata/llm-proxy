@@ -38,4 +38,5 @@ providers:
 usage_log:
   enabled: false
   retention_days: 30
-  # path: ~/.local/share/llmproxy/usage.sqlite
+  # Only `${ENV_VAR}` interpolation is applied — `~` is not expanded.
+  # path: ${HOME}/.local/share/llmproxy/usage.sqlite

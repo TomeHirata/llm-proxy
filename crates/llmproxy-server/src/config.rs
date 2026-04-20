@@ -23,9 +23,14 @@ pub struct UsageLogConfig {
     #[serde(default = "default_retention_days")]
     pub retention_days: u32,
     /// Override for where the SQLite file lives. Defaults to
-    /// `~/.local/share/llmproxy/usage.sqlite`.
+    /// `$HOME/.local/share/llmproxy/usage.sqlite`.
     #[serde(default)]
     pub path: Option<PathBuf>,
+    /// Per-entry cap on captured request/response bodies. Longer payloads
+    /// are truncated with a `… [truncated N bytes]` marker so a single huge
+    /// response can't OOM the server.
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: usize,
 }
 
 impl Default for UsageLogConfig {
@@ -34,12 +39,16 @@ impl Default for UsageLogConfig {
             enabled: false,
             retention_days: default_retention_days(),
             path: None,
+            max_body_bytes: default_max_body_bytes(),
         }
     }
 }
 
 fn default_retention_days() -> u32 {
     30
+}
+fn default_max_body_bytes() -> usize {
+    1_048_576 // 1 MiB
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

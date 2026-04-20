@@ -70,8 +70,8 @@ struct Inner {
 }
 
 impl UsageStore {
-    /// Open (or create) the database at `path` and spawn the background
-    /// writer. Returns `None` if the enabled flag is false.
+    /// Open (or create) the database at `path`, initialize the schema, and
+    /// spawn the background writer thread.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -87,26 +87,33 @@ impl UsageStore {
 
         let (tx, mut rx) = mpsc::channel::<UsageEntry>(1024);
         let writer_path = path.clone();
-        tokio::spawn(async move {
-            // Dedicated writer connection so the writer task never contends
-            // with reader queries on the main connection.
-            let mut writer_conn = match Connection::open(&writer_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!("usage_log: cannot open writer conn: {e}");
+        // Run the writer on a dedicated OS thread (not a tokio worker) — the
+        // rusqlite API is synchronous, and running a blocking writer loop on
+        // a tokio worker thread under sustained load would stall request
+        // handling. `blocking_recv` is explicitly designed for this.
+        if let Err(e) = std::thread::Builder::new()
+            .name("usage-log-writer".to_string())
+            .spawn(move || {
+                let mut writer_conn = match Connection::open(&writer_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("usage_log: cannot open writer conn: {e}");
+                        return;
+                    }
+                };
+                if let Err(e) = init_schema(&writer_conn) {
+                    tracing::error!("usage_log: writer schema init failed: {e}");
                     return;
                 }
-            };
-            if let Err(e) = init_schema(&writer_conn) {
-                tracing::error!("usage_log: writer schema init failed: {e}");
-                return;
-            }
-            while let Some(entry) = rx.recv().await {
-                if let Err(e) = insert_entry(&mut writer_conn, &entry) {
-                    tracing::error!("usage_log: insert failed: {e}");
+                while let Some(entry) = rx.blocking_recv() {
+                    if let Err(e) = insert_entry(&mut writer_conn, &entry) {
+                        tracing::error!("usage_log: insert failed: {e}");
+                    }
                 }
-            }
-        });
+            })
+        {
+            tracing::error!("usage_log: failed to spawn writer thread: {e}");
+        }
 
         Ok(Self {
             inner: Arc::new(Inner {
@@ -141,47 +148,62 @@ impl UsageStore {
         let conn = self.inner.conn.lock().await;
         let since_s = since.to_rfc3339();
 
+        // Single query with two window functions to compute p50/p95 per group —
+        // avoids an N+1 of 3 extra queries per (provider, model_id).
         let mut stmt = conn.prepare(
-            "SELECT provider, model_id,
-                    COUNT(*)                                       AS count,
-                    SUM(CASE WHEN status BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS ok,
-                    COALESCE(AVG(latency_ms), 0.0)                 AS avg_lat,
-                    COALESCE(SUM(prompt_tokens), 0)                AS pt,
-                    COALESCE(SUM(completion_tokens), 0)            AS ct
-             FROM usage_log
-             WHERE created_at >= ?1
-             GROUP BY provider, model_id
-             ORDER BY count DESC",
+            "WITH filtered AS (
+                 SELECT provider, model_id, status, latency_ms,
+                        prompt_tokens, completion_tokens
+                 FROM usage_log
+                 WHERE created_at >= ?1
+             ),
+             ranked AS (
+                 SELECT provider, model_id, latency_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY provider, model_id ORDER BY latency_ms
+                        ) AS rn,
+                        COUNT(*) OVER (PARTITION BY provider, model_id) AS cnt
+                 FROM filtered
+             ),
+             aggregated AS (
+                 SELECT provider, model_id,
+                        COUNT(*)                                              AS count,
+                        SUM(CASE WHEN status BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS ok,
+                        COALESCE(AVG(latency_ms), 0.0)                        AS avg_lat,
+                        COALESCE(SUM(prompt_tokens), 0)                       AS pt,
+                        COALESCE(SUM(completion_tokens), 0)                   AS ct
+                 FROM filtered
+                 GROUP BY provider, model_id
+             ),
+             pct AS (
+                 SELECT provider, model_id,
+                        MIN(CASE WHEN rn >= ((cnt + 1) / 2)           THEN latency_ms END) AS p50,
+                        MIN(CASE WHEN rn >= ((cnt * 95 + 99) / 100)   THEN latency_ms END) AS p95
+                 FROM ranked
+                 GROUP BY provider, model_id
+             )
+             SELECT a.provider, a.model_id, a.count, a.ok, a.avg_lat,
+                    COALESCE(p.p50, 0), COALESCE(p.p95, 0), a.pt, a.ct
+             FROM aggregated a
+             LEFT JOIN pct p
+               ON p.provider = a.provider AND p.model_id = a.model_id
+             ORDER BY a.count DESC",
         )?;
-        let rows: Vec<(String, String, i64, i64, f64, i64, i64)> = stmt
+        let out: Vec<SummaryRow> = stmt
             .query_map(params![since_s], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, f64>(4)?,
-                    r.get::<_, i64>(5)?,
-                    r.get::<_, i64>(6)?,
-                ))
+                Ok(SummaryRow {
+                    provider: r.get::<_, String>(0)?,
+                    model_id: r.get::<_, String>(1)?,
+                    count: r.get::<_, i64>(2)?,
+                    success_count: r.get::<_, i64>(3)?,
+                    avg_latency_ms: r.get::<_, f64>(4)?,
+                    p50_latency_ms: r.get::<_, i64>(5)?,
+                    p95_latency_ms: r.get::<_, i64>(6)?,
+                    prompt_tokens: r.get::<_, i64>(7)?,
+                    completion_tokens: r.get::<_, i64>(8)?,
+                })
             })?
             .collect::<rusqlite::Result<_>>()?;
-
-        let mut out = Vec::with_capacity(rows.len());
-        for (provider, model_id, count, ok, avg_lat, pt, ct) in rows {
-            let (p50, p95) = percentiles(&conn, &provider, &model_id, &since_s)?;
-            out.push(SummaryRow {
-                provider,
-                model_id,
-                count,
-                success_count: ok,
-                avg_latency_ms: avg_lat,
-                p50_latency_ms: p50,
-                p95_latency_ms: p95,
-                prompt_tokens: pt,
-                completion_tokens: ct,
-            });
-        }
 
         let totals = conn.query_row(
             "SELECT COUNT(*),
@@ -243,7 +265,13 @@ impl UsageStore {
     }
 }
 
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn init_schema(conn: &Connection) -> Result<()> {
+    // Two connections share the file (reader + writer), plus prune runs
+    // concurrently — `busy_timeout` makes `SQLITE_BUSY` block-and-retry
+    // instead of returning an error.
+    conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.execute_batch(
@@ -295,38 +323,6 @@ fn insert_entry(conn: &mut Connection, e: &UsageEntry) -> Result<()> {
     Ok(())
 }
 
-/// Approximate percentiles via ORDER BY + OFFSET. Correct for modest row
-/// counts; if the table grows to millions of rows we can switch to a sampling
-/// scheme later.
-fn percentiles(
-    conn: &Connection,
-    provider: &str,
-    model_id: &str,
-    since_s: &str,
-) -> Result<(i64, i64)> {
-    let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM usage_log
-         WHERE provider = ?1 AND model_id = ?2 AND created_at >= ?3",
-        params![provider, model_id, since_s],
-        |r| r.get(0),
-    )?;
-    if n == 0 {
-        return Ok((0, 0));
-    }
-    let p50_idx = (n / 2).max(0);
-    let p95_idx = ((n * 95) / 100).min(n - 1);
-    let fetch = |idx: i64| -> Result<i64> {
-        Ok(conn.query_row(
-            "SELECT latency_ms FROM usage_log
-             WHERE provider = ?1 AND model_id = ?2 AND created_at >= ?3
-             ORDER BY latency_ms ASC LIMIT 1 OFFSET ?4",
-            params![provider, model_id, since_s, idx],
-            |r| r.get::<_, i64>(0),
-        )?)
-    };
-    Ok((fetch(p50_idx)?, fetch(p95_idx)?))
-}
-
 /// Extract `{prompt_tokens, completion_tokens, total_tokens}` from an OpenAI
 /// chat completion JSON response body. All three are optional.
 pub fn extract_tokens(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
@@ -341,21 +337,17 @@ pub fn extract_tokens(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
     )
 }
 
-/// Parse a CLI `--since` value like `7d`, `24h`, `30m`, `2w`. Falls back to
-/// `humantime` parsing for more exotic forms.
+/// Parse a CLI `--since` value. Handles the shorthand units `d` / `w` that
+/// `humantime` does not understand (e.g. `7d`, `2w`); everything else is
+/// delegated to `humantime::parse_duration`, so `10ms`, `2h 30min`, etc. all
+/// work.
 pub fn parse_since(s: &str) -> Result<chrono::Duration> {
-    // humantime doesn't understand "d" or "w" alone as suffixes on plain
-    // numbers — e.g. "7d" — but we want that shorthand.
     let s = s.trim();
-    if let Some((num, unit)) = split_duration(s) {
-        let n = num as i64;
+    if let Some((num, unit)) = split_shorthand(s) {
         return Ok(match unit {
-            "s" | "sec" | "secs" | "second" | "seconds" => chrono::Duration::seconds(n),
-            "m" | "min" | "mins" | "minute" | "minutes" => chrono::Duration::minutes(n),
-            "h" | "hr" | "hrs" | "hour" | "hours" => chrono::Duration::hours(n),
-            "d" | "day" | "days" => chrono::Duration::days(n),
-            "w" | "week" | "weeks" => chrono::Duration::weeks(n),
-            other => anyhow::bail!("unknown duration unit: '{other}'"),
+            "d" | "day" | "days" => chrono::Duration::days(num as i64),
+            "w" | "week" | "weeks" => chrono::Duration::weeks(num as i64),
+            _ => unreachable!(),
         });
     }
     let std =
@@ -363,14 +355,20 @@ pub fn parse_since(s: &str) -> Result<chrono::Duration> {
     Ok(chrono::Duration::from_std(std)?)
 }
 
-fn split_duration(s: &str) -> Option<(u64, &str)> {
+/// Returns `Some((n, unit))` only for units `humantime` does not cover —
+/// `d`/`day`/`days`/`w`/`week`/`weeks`. Anything else falls through.
+fn split_shorthand(s: &str) -> Option<(u64, &str)> {
     let end = s.chars().take_while(|c| c.is_ascii_digit()).count();
     if end == 0 {
         return None;
     }
     let (n, rest) = s.split_at(end);
+    let rest = rest.trim();
     let n: u64 = n.parse().ok()?;
-    Some((n, rest.trim()))
+    match rest {
+        "d" | "day" | "days" | "w" | "week" | "weeks" => Some((n, rest)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -384,6 +382,18 @@ mod tests {
         assert_eq!(parse_since("24h").unwrap(), chrono::Duration::hours(24));
         assert_eq!(parse_since("30m").unwrap(), chrono::Duration::minutes(30));
         assert_eq!(parse_since("2w").unwrap(), chrono::Duration::weeks(2));
+    }
+
+    #[test]
+    fn parse_since_falls_through_to_humantime() {
+        assert_eq!(
+            parse_since("10ms").unwrap(),
+            chrono::Duration::milliseconds(10)
+        );
+        assert_eq!(
+            parse_since("2h 30min").unwrap(),
+            chrono::Duration::hours(2) + chrono::Duration::minutes(30)
+        );
     }
 
     #[test]

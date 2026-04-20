@@ -77,7 +77,7 @@ pruned hourly.
 usage_log:
   enabled: true
   retention_days: 30
-  # path: ~/.local/share/llmproxy/usage.sqlite
+  # path: ${HOME}/.local/share/llmproxy/usage.sqlite
 ```
 
 ```bash
