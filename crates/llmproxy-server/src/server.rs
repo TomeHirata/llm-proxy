@@ -122,7 +122,7 @@ async fn chat_handler(State(state): State<AppState>, headers: HeaderMap, body: B
                     store: state.usage_store.clone(),
                     provider: provider_name,
                     model_id: model_for_log,
-                    request_body: raw_request,
+                    request_body: truncate_body(raw_request, state.max_body_bytes),
                     started,
                     max_body_bytes: state.max_body_bytes,
                     sse_format: SseFormat::OpenAI,
@@ -430,10 +430,10 @@ async fn anthropic_messages_handler(
         let byte_stream = upstream.bytes_stream().map(|r| match r {
             Ok(b) => Ok::<_, Infallible>(b),
             Err(e) => {
-                let msg = e.to_string();
+                let payload =
+                    json!({"type": "error", "error": {"message": e.to_string()}}).to_string();
                 Ok(bytes::Bytes::from(
-                    format!("data: {{\"type\":\"error\",\"error\":{{\"message\":\"{msg}\"}}}}\n\n")
-                        .into_bytes(),
+                    format!("data: {payload}\n\n").into_bytes(),
                 ))
             }
         });
@@ -441,7 +441,7 @@ async fn anthropic_messages_handler(
             store: state.usage_store.clone(),
             provider: "anthropic".to_string(),
             model_id,
-            request_body: request_body_str,
+            request_body: truncate_body(request_body_str, state.max_body_bytes),
             started,
             max_body_bytes: state.max_body_bytes,
             sse_format: SseFormat::Anthropic,
@@ -457,58 +457,66 @@ async fn anthropic_messages_handler(
             )))
             .unwrap()
     } else {
-        let resp_bytes = match upstream.bytes().await {
-            Ok(b) => b,
-            Err(e) => {
-                let msg = format!("failed to read response: {}", e.without_url());
-                record_raw(
-                    &state,
-                    "anthropic",
-                    &model_id,
-                    502,
-                    started,
-                    false,
-                    &request_body_str,
-                    &msg,
-                    None,
-                    None,
-                    None,
-                    Some(msg.clone()),
-                );
-                return Response::builder()
-                    .status(StatusCode::BAD_GATEWAY)
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"error": {"message": msg, "type": "proxy_error"}}).to_string(),
-                    ))
-                    .unwrap();
+        // Stream the response to the client while teeing into a capped buffer
+        // for usage logging, avoiding buffering the full body in memory.
+        let max_body_bytes = state.max_body_bytes;
+        let usage_state = state.clone();
+        let usage_model_id = model_id.clone();
+        let usage_request_body = truncate_body(request_body_str, max_body_bytes);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(8);
+
+        tokio::spawn(async move {
+            let mut byte_stream = upstream.bytes_stream();
+            let mut resp_buf: Vec<u8> = Vec::new();
+            let mut read_error: Option<String> = None;
+
+            while let Some(item) = byte_stream.next().await {
+                match item {
+                    Ok(chunk) => {
+                        let room = max_body_bytes.saturating_sub(resp_buf.len());
+                        if room > 0 {
+                            resp_buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                        }
+                        if tx.send(Ok(chunk)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        read_error = Some(format!("failed to read response: {}", e.without_url()));
+                        break;
+                    }
+                }
             }
-        };
-        let resp_str = String::from_utf8_lossy(&resp_bytes).into_owned();
-        let (pt, ct, tt) = usage_log::extract_tokens_anthropic(&resp_str);
-        let error = if status >= 400 {
-            Some(resp_str.clone())
-        } else {
-            None
-        };
-        record_raw(
-            &state,
-            "anthropic",
-            &model_id,
-            status,
-            started,
-            false,
-            &request_body_str,
-            &resp_str,
-            pt,
-            ct,
-            tt,
-            error,
-        );
+
+            let resp_str = String::from_utf8_lossy(&resp_buf).into_owned();
+            let (pt, ct, tt) = usage_log::extract_tokens_anthropic(&resp_str);
+            let error = match read_error {
+                Some(msg) => Some(msg),
+                None if status >= 400 => Some(resp_str.clone()),
+                None => None,
+            };
+            record_raw(
+                &usage_state,
+                "anthropic",
+                &usage_model_id,
+                status,
+                started,
+                false,
+                &usage_request_body,
+                &resp_str,
+                pt,
+                ct,
+                tt,
+                error,
+            );
+        });
+
+        let body_stream =
+            futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|v| (v, rx)) });
         Response::builder()
             .status(status)
             .header("content-type", content_type)
-            .body(Body::from(resp_bytes))
+            .body(Body::from_stream(body_stream))
             .unwrap()
     }
 }
@@ -749,7 +757,7 @@ impl<S> Drop for FinalizedStream<S> {
         };
         let done_marker = match f.sse_format {
             SseFormat::OpenAI => "data: [DONE]",
-            SseFormat::Anthropic => "\"type\":\"message_stop\"",
+            SseFormat::Anthropic => "message_stop event",
         };
 
         let (status, error) = if self.saw_error {
@@ -799,15 +807,19 @@ where
             if s.contains("\"error\":") {
                 self.saw_error = true;
             }
-            let done_marker = self
-                .finalizer
-                .as_ref()
-                .map(|f| match f.sse_format {
-                    SseFormat::OpenAI => "data: [DONE]",
-                    SseFormat::Anthropic => "\"type\":\"message_stop\"",
-                })
-                .unwrap_or("data: [DONE]");
-            if s.contains(done_marker) {
+            let saw_done = match self.finalizer.as_ref().map(|f| f.sse_format) {
+                Some(SseFormat::Anthropic) => s.lines().any(|line| {
+                    let Some(rest) = line.strip_prefix("data:") else {
+                        return false;
+                    };
+                    serde_json::from_str::<serde_json::Value>(rest.trim())
+                        .ok()
+                        .and_then(|v| v["type"].as_str().map(|t| t == "message_stop"))
+                        .unwrap_or(false)
+                }),
+                _ => s.contains("data: [DONE]"),
+            };
+            if saw_done {
                 self.saw_done = true;
             }
             let chunk = b.clone();
@@ -1089,5 +1101,44 @@ mod tests {
     fn truncate_body_unchanged_under_cap() {
         let out = truncate_body("hello".into(), 50);
         assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn last_usage_from_anthropic_sse_extracts_tokens() {
+        let body = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        assert_eq!(
+            last_usage_from_anthropic_sse(body),
+            (Some(10), Some(5), Some(15))
+        );
+    }
+
+    #[test]
+    fn last_usage_from_anthropic_sse_missing_tokens() {
+        let body = concat!(
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        assert_eq!(last_usage_from_anthropic_sse(body), (None, None, None));
+    }
+
+    #[test]
+    fn last_usage_from_anthropic_sse_partial_tokens() {
+        // Only input tokens present (no message_delta).
+        let body = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7}}}\n\n",
+        );
+        assert_eq!(last_usage_from_anthropic_sse(body), (Some(7), None, None));
     }
 }

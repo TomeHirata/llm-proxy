@@ -425,6 +425,28 @@ mod tests {
         assert_eq!(extract_tokens("not-json"), (None, None, None));
     }
 
+    #[test]
+    fn extract_tokens_anthropic_parses_usage() {
+        let body = r#"{"usage":{"input_tokens":15,"output_tokens":8},"content":[],"stop_reason":"end_turn"}"#;
+        assert_eq!(
+            extract_tokens_anthropic(body),
+            (Some(15), Some(8), Some(23))
+        );
+    }
+
+    #[test]
+    fn extract_tokens_anthropic_missing_usage() {
+        assert_eq!(extract_tokens_anthropic("{}"), (None, None, None));
+        assert_eq!(extract_tokens_anthropic("not-json"), (None, None, None));
+    }
+
+    #[test]
+    fn extract_tokens_anthropic_invalid_usage_fields() {
+        // usage present but fields are wrong types → fall back to None
+        let body = r#"{"usage":{"input_tokens":"bad","output_tokens":null}}"#;
+        assert_eq!(extract_tokens_anthropic(body), (None, None, None));
+    }
+
     #[tokio::test]
     async fn round_trip_insert_and_summary() {
         let dir = tempdir().unwrap();
