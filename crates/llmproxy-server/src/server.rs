@@ -366,10 +366,16 @@ async fn anthropic_messages_handler(
     };
     let mut injected = reqwest::header::HeaderMap::new();
     injected.insert("x-api-key", api_key);
-    // Only inject anthropic-version if the caller didn't already set it.
-    injected
-        .entry("anthropic-version")
-        .or_insert_with(|| reqwest::header::HeaderValue::from_static("2023-06-01"));
+    // Only inject the fallback version when the caller didn't send one.
+    // build_upstream_headers gives injected headers precedence, so checking
+    // the incoming map here prevents overriding the SDK's own version (which
+    // may be needed for fields like `context_management` added in newer SDKs).
+    if !headers.contains_key("anthropic-version") {
+        injected.insert(
+            "anthropic-version",
+            reqwest::header::HeaderValue::from_static("2023-06-01"),
+        );
+    }
     let url = reqwest::Url::parse("https://api.anthropic.com/v1/messages").unwrap();
     native_forward(&state.http, url, &headers, injected, body).await
 }
