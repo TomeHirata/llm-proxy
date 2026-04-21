@@ -337,6 +337,18 @@ pub fn extract_tokens(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
     )
 }
 
+/// Extract token counts from an Anthropic `/v1/messages` response body.
+/// Anthropic uses `input_tokens` / `output_tokens` in the `usage` object.
+pub fn extract_tokens_anthropic(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return (None, None, None);
+    };
+    let input = v["usage"]["input_tokens"].as_i64();
+    let output = v["usage"]["output_tokens"].as_i64();
+    let total = input.zip(output).map(|(i, o)| i + o);
+    (input, output, total)
+}
+
 /// Parse a CLI `--since` value. Handles the shorthand units `d` / `w` that
 /// `humantime` does not understand (e.g. `7d`, `2w`); everything else is
 /// delegated to `humantime::parse_duration`, so `10ms`, `2h 30min`, etc. all
@@ -411,6 +423,28 @@ mod tests {
     fn extract_tokens_missing_usage() {
         assert_eq!(extract_tokens("{}"), (None, None, None));
         assert_eq!(extract_tokens("not-json"), (None, None, None));
+    }
+
+    #[test]
+    fn extract_tokens_anthropic_parses_usage() {
+        let body = r#"{"usage":{"input_tokens":15,"output_tokens":8},"content":[],"stop_reason":"end_turn"}"#;
+        assert_eq!(
+            extract_tokens_anthropic(body),
+            (Some(15), Some(8), Some(23))
+        );
+    }
+
+    #[test]
+    fn extract_tokens_anthropic_missing_usage() {
+        assert_eq!(extract_tokens_anthropic("{}"), (None, None, None));
+        assert_eq!(extract_tokens_anthropic("not-json"), (None, None, None));
+    }
+
+    #[test]
+    fn extract_tokens_anthropic_invalid_usage_fields() {
+        // usage present but fields are wrong types → fall back to None
+        let body = r#"{"usage":{"input_tokens":"bad","output_tokens":null}}"#;
+        assert_eq!(extract_tokens_anthropic(body), (None, None, None));
     }
 
     #[tokio::test]
