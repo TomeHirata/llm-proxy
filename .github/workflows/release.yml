@@ -150,21 +150,34 @@ jobs:
         with:
           path: artifacts
       - name: Assemble release files
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          mkdir -p release
-          # Binaries: one per target directory
+          mkdir -p release staging
+          # Build one tarball per target from the raw binary artifacts.
+          # Tarball layout: top-level `llmproxy` binary (brew extracts here).
+          make_tar() {
+            local target="$1" src="$2"
+            local dir="staging/llmproxy-${TAG}-${target}"
+            mkdir -p "$dir"
+            cp "$src" "$dir/llmproxy"
+            chmod +x "$dir/llmproxy"
+            tar -C staging -czf "release/llmproxy-${TAG}-${target}.tar.gz" "$(basename "$dir")"
+          }
           for d in artifacts/llmproxy-*; do
             [ -d "$d" ] || continue
             name=$(basename "$d")
+            target="${name#llmproxy-}"
             if [ -f "$d/llmproxy" ]; then
-              cp "$d/llmproxy" "release/${name}"
+              make_tar "$target" "$d/llmproxy"
             elif [ -f "$d/llmproxy-universal-apple-darwin" ]; then
-              cp "$d/llmproxy-universal-apple-darwin" "release/"
+              make_tar "universal-apple-darwin" "$d/llmproxy-universal-apple-darwin"
             fi
           done
-          # .debs
+          # .debs are shipped as-is.
           find artifacts -name '*.deb' -exec cp {} release/ \;
+          ( cd release && sha256sum * > SHA256SUMS )
           ls -la release/
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -321,3 +334,120 @@ jobs:
               apt-get install -y llmproxy
               llmproxy --help
             '
+
+  publish-brew:
+    needs: github-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-brew
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Rebuild tarballs for SHA computation
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p tarballs staging
+          make_tar() {
+            local target="$1" src="$2"
+            local dir="staging/llmproxy-${TAG}-${target}"
+            mkdir -p "$dir"
+            cp "$src" "$dir/llmproxy"
+            chmod +x "$dir/llmproxy"
+            tar -C staging -czf "tarballs/llmproxy-${TAG}-${target}.tar.gz" "$(basename "$dir")"
+          }
+          for d in artifacts/llmproxy-*; do
+            [ -d "$d" ] || continue
+            name=$(basename "$d")
+            target="${name#llmproxy-}"
+            if [ -f "$d/llmproxy" ]; then
+              make_tar "$target" "$d/llmproxy"
+            elif [ -f "$d/llmproxy-universal-apple-darwin" ]; then
+              make_tar "universal-apple-darwin" "$d/llmproxy-universal-apple-darwin"
+            fi
+          done
+          ls -la tarballs/
+      - name: Compute SHA256s
+        id: shas
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          get_sha() {
+            sha256sum "tarballs/llmproxy-${TAG}-$1.tar.gz" | awk '{print $1}'
+          }
+          {
+            echo "darwin_arm64=$(get_sha aarch64-apple-darwin)"
+            echo "darwin_x86_64=$(get_sha x86_64-apple-darwin)"
+            echo "linux_arm64=$(get_sha aarch64-unknown-linux-gnu)"
+            echo "linux_x86_64=$(get_sha x86_64-unknown-linux-gnu)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Render formula
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ github.ref_name }}
+          REPO_URL: https://github.com/${{ github.repository }}
+          DOWNLOAD_BASE: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+          SHA_DARWIN_ARM64: ${{ steps.shas.outputs.darwin_arm64 }}
+          SHA_DARWIN_X86_64: ${{ steps.shas.outputs.darwin_x86_64 }}
+          SHA_LINUX_ARM64: ${{ steps.shas.outputs.linux_arm64 }}
+          SHA_LINUX_X86_64: ${{ steps.shas.outputs.linux_x86_64 }}
+        run: |
+          set -euo pipefail
+          # Strip leading 'v' for the brew `version` field.
+          export VERSION="${VERSION#v}"
+          sudo apt-get update && sudo apt-get install -y gettext-base
+          envsubst < source/packaging/brew/llmproxy.rb.template > llmproxy.rb
+          echo "--- rendered formula ---"
+          cat llmproxy.rb
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Commit formula to tap
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula
+          cp llmproxy.rb tap/Formula/llmproxy.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/llmproxy.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date"
+            exit 0
+          fi
+          git commit -m "llmproxy ${GITHUB_REF_NAME}"
+          for attempt in 1 2 3 4; do
+            if git push; then exit 0; fi
+            sleep $((2 ** attempt))
+          done
+          exit 1
+
+  smoke-test-brew:
+    needs: publish-brew
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: brew install from tap
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner_lc=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          brew tap "${owner_lc}/tap"
+          brew install llmproxy
+          llmproxy --help
