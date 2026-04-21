@@ -1,7 +1,8 @@
 [package]
-name    = "llmproxy-server"
-version = "0.1.0"
-edition = "2021"
+name        = "llmproxy-server"
+version     = "0.1.0"
+edition     = "2021"
+description = "LLM proxy server with unified API for multiple providers"
 
 [[bin]]
 name = "llmproxy"
@@ -39,7 +40,17 @@ tempfile    = "3"
 tower       = { version = "0.4", features = ["util"] }
 
 [package.metadata.deb]
+maintainer = "Tome Hirata <tomehirata@users.noreply.github.com>"
+copyright = "2026, Tome Hirata <tomehirata@users.noreply.github.com>"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+llmproxy is a local proxy server that exposes a unified API for multiple \
+LLM providers (OpenAI, Anthropic, Google, etc.), with usage logging, \
+metrics, and request routing."""
+section = "net"
+priority = "optional"
 assets = [
     ["target/release/llmproxy", "usr/bin/", "755"],
-    ["config.example.yaml", "etc/llmproxy/config.yaml", "644"],
+    ["../../config.example.yaml", "etc/llmproxy/config.yaml", "644"],
 ]
+conf-files = ["/etc/llmproxy/config.yaml"]

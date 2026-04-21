@@ -1,0 +1,35 @@
+class Llmproxy < Formula
+  desc "LLM proxy server with unified API for multiple providers"
+  homepage "${REPO_URL}"
+  version "${VERSION}"
+
+  on_macos do
+    on_arm do
+      url "${DOWNLOAD_BASE}/llmproxy-${TAG}-aarch64-apple-darwin.tar.gz"
+      sha256 "${SHA_DARWIN_ARM64}"
+    end
+    on_intel do
+      url "${DOWNLOAD_BASE}/llmproxy-${TAG}-x86_64-apple-darwin.tar.gz"
+      sha256 "${SHA_DARWIN_X86_64}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "${DOWNLOAD_BASE}/llmproxy-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "${SHA_LINUX_ARM64}"
+    end
+    on_intel do
+      url "${DOWNLOAD_BASE}/llmproxy-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "${SHA_LINUX_X86_64}"
+    end
+  end
+
+  def install
+    bin.install "llmproxy"
+  end
+
+  test do
+    assert_match "llmproxy", shell_output("#{bin}/llmproxy --help")
+  end
+end
