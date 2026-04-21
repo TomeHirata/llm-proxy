@@ -23,11 +23,11 @@ jobs:
             os: ubuntu-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install aarch64 linker (Linux ARM64 only)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
@@ -64,7 +64,7 @@ jobs:
       - name: Build binary
         if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: cargo build --release --target ${{ matrix.target }} -p llmproxy-server
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llmproxy-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/llmproxy
@@ -73,11 +73,11 @@ jobs:
     needs: build-binaries
     runs-on: macos-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: llmproxy-x86_64-apple-darwin
           path: artifacts/x86_64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: llmproxy-aarch64-apple-darwin
           path: artifacts/aarch64
@@ -86,7 +86,7 @@ jobs:
             artifacts/x86_64/llmproxy \
             artifacts/aarch64/llmproxy \
             -output llmproxy-universal-apple-darwin
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llmproxy-universal-apple-darwin
           path: llmproxy-universal-apple-darwin
@@ -132,8 +132,8 @@ jobs:
             platform: linux/arm64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         if: matrix.arch == 'arm64'
         with:
           platforms: arm64
@@ -164,7 +164,7 @@ jobs:
             base="${f%.deb}"
             mv "$f" "${base}_${{ matrix.distro }}-${{ matrix.codename }}.deb"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: deb-${{ matrix.distro }}-${{ matrix.codename }}-${{ matrix.arch }}
           path: target/debian/*.deb
@@ -174,7 +174,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
       - name: Assemble release files
@@ -208,7 +208,7 @@ jobs:
           ( cd release && sha256sum * > SHA256SUMS )
           ls -la release/
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: release/*
           draft: false
@@ -222,15 +222,15 @@ jobs:
       group: publish-apt
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           path: source
       - name: Checkout gh-pages
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           ref: gh-pages
           path: gh-pages
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: debs
           pattern: deb-*
@@ -375,10 +375,10 @@ jobs:
   #     group: publish-brew
   #     cancel-in-progress: false
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
   #       with:
   #         path: source
-  #     - uses: actions/download-artifact@v4
+  #     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
   #       with:
   #         path: artifacts
   #     - name: Rebuild tarballs for SHA computation
@@ -440,7 +440,7 @@ jobs:
   #         echo "--- rendered formula ---"
   #         cat llmproxy.rb
   #     - name: Checkout Homebrew tap
-  #       uses: actions/checkout@v4
+  #       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
   #       with:
   #         repository: ${{ github.repository_owner }}/homebrew-tap
   #         token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
