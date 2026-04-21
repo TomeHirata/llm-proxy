@@ -125,6 +125,7 @@ async fn chat_handler(State(state): State<AppState>, headers: HeaderMap, body: B
                     request_body: raw_request,
                     started,
                     max_body_bytes: state.max_body_bytes,
+                    sse_format: SseFormat::OpenAI,
                 };
                 let body = Body::from_stream(FinalizedStream::new(byte_stream, finalizer));
                 Response::builder()
@@ -344,6 +345,13 @@ async fn anthropic_messages_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let started = Instant::now();
+    let request_body_str = String::from_utf8_lossy(&body).into_owned();
+    let model_id = serde_json::from_str::<serde_json::Value>(&request_body_str)
+        .ok()
+        .and_then(|v| v["model"].as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -366,18 +374,143 @@ async fn anthropic_messages_handler(
     };
     let mut injected = reqwest::header::HeaderMap::new();
     injected.insert("x-api-key", api_key);
-    // Only inject the fallback version when the caller didn't send one.
-    // build_upstream_headers gives injected headers precedence, so checking
-    // the incoming map here prevents overriding the SDK's own version (which
-    // may be needed for fields like `context_management` added in newer SDKs).
     if !headers.contains_key("anthropic-version") {
         injected.insert(
             "anthropic-version",
             reqwest::header::HeaderValue::from_static("2023-06-01"),
         );
     }
+
+    let upstream_headers = build_upstream_headers(&headers, injected);
     let url = reqwest::Url::parse("https://api.anthropic.com/v1/messages").unwrap();
-    native_forward(&state.http, url, &headers, injected, body).await
+    let upstream = match state
+        .http
+        .post(url)
+        .headers(upstream_headers)
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("upstream request failed: {}", e.without_url());
+            record_raw(
+                &state,
+                "anthropic",
+                &model_id,
+                502,
+                started,
+                false,
+                &request_body_str,
+                &msg,
+                None,
+                None,
+                None,
+                Some(msg.clone()),
+            );
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"error": {"message": msg, "type": "proxy_error"}}).to_string(),
+                ))
+                .unwrap();
+        }
+    };
+
+    let status = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+
+    if content_type.contains("text/event-stream") {
+        let byte_stream = upstream.bytes_stream().map(|r| match r {
+            Ok(b) => Ok::<_, Infallible>(b),
+            Err(e) => {
+                let msg = e.to_string();
+                Ok(bytes::Bytes::from(
+                    format!("data: {{\"type\":\"error\",\"error\":{{\"message\":\"{msg}\"}}}}\n\n")
+                        .into_bytes(),
+                ))
+            }
+        });
+        let finalizer = StreamFinalizer {
+            store: state.usage_store.clone(),
+            provider: "anthropic".to_string(),
+            model_id,
+            request_body: request_body_str,
+            started,
+            max_body_bytes: state.max_body_bytes,
+            sse_format: SseFormat::Anthropic,
+        };
+        Response::builder()
+            .status(status)
+            .header("content-type", content_type)
+            .header("cache-control", "no-cache")
+            .header("connection", "keep-alive")
+            .body(Body::from_stream(FinalizedStream::new(
+                byte_stream,
+                finalizer,
+            )))
+            .unwrap()
+    } else {
+        let resp_bytes = match upstream.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                let msg = format!("failed to read response: {}", e.without_url());
+                record_raw(
+                    &state,
+                    "anthropic",
+                    &model_id,
+                    502,
+                    started,
+                    false,
+                    &request_body_str,
+                    &msg,
+                    None,
+                    None,
+                    None,
+                    Some(msg.clone()),
+                );
+                return Response::builder()
+                    .status(StatusCode::BAD_GATEWAY)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"error": {"message": msg, "type": "proxy_error"}}).to_string(),
+                    ))
+                    .unwrap();
+            }
+        };
+        let resp_str = String::from_utf8_lossy(&resp_bytes).into_owned();
+        let (pt, ct, tt) = usage_log::extract_tokens_anthropic(&resp_str);
+        let error = if status >= 400 {
+            Some(resp_str.clone())
+        } else {
+            None
+        };
+        record_raw(
+            &state,
+            "anthropic",
+            &model_id,
+            status,
+            started,
+            false,
+            &request_body_str,
+            &resp_str,
+            pt,
+            ct,
+            tt,
+            error,
+        );
+        Response::builder()
+            .status(status)
+            .header("content-type", content_type)
+            .body(Body::from(resp_bytes))
+            .unwrap()
+    }
 }
 
 async fn gemini_generate_content_handler(
@@ -526,6 +659,17 @@ fn record_error(
     );
 }
 
+/// Which SSE dialect the upstream speaks — controls the terminator marker and
+/// the token-extraction strategy used by `FinalizedStream`.
+#[derive(Clone, Copy)]
+enum SseFormat {
+    /// OpenAI: stream ends with `data: [DONE]`, tokens in `usage` object.
+    OpenAI,
+    /// Anthropic: stream ends with `"type":"message_stop"`, tokens split
+    /// across `message_start` (input) and `message_delta` (output) events.
+    Anthropic,
+}
+
 /// Captures latency + assembled SSE bytes when a streaming response finishes.
 struct StreamFinalizer {
     store: Option<UsageStore>,
@@ -534,6 +678,7 @@ struct StreamFinalizer {
     request_body: String,
     started: Instant,
     max_body_bytes: usize,
+    sse_format: SseFormat,
 }
 
 /// A stream adapter that buffers every chunk it yields and, when the inner
@@ -598,15 +743,22 @@ impl<S> Drop for FinalizedStream<S> {
         if self.dropped_bytes > 0 {
             assembled.push_str(&format!("… [truncated {} bytes]", self.dropped_bytes));
         }
-        let tokens = last_usage_from_sse(&assembled);
+        let tokens = match f.sse_format {
+            SseFormat::OpenAI => last_usage_from_sse(&assembled),
+            SseFormat::Anthropic => last_usage_from_anthropic_sse(&assembled),
+        };
+        let done_marker = match f.sse_format {
+            SseFormat::OpenAI => "data: [DONE]",
+            SseFormat::Anthropic => "\"type\":\"message_stop\"",
+        };
 
-        // If we emitted a synthesized error chunk or the stream ended without
-        // a `[DONE]` marker, treat it as a failure so success-rate metrics
-        // aren't skewed.
         let (status, error) = if self.saw_error {
             (502, Some("upstream stream error".into()))
         } else if !self.saw_done {
-            (499, Some("client disconnected before [DONE]".into()))
+            (
+                499,
+                Some(format!("client disconnected before {done_marker}")),
+            )
         } else {
             (200, None)
         };
@@ -647,7 +799,15 @@ where
             if s.contains("\"error\":") {
                 self.saw_error = true;
             }
-            if s.contains("data: [DONE]") {
+            let done_marker = self
+                .finalizer
+                .as_ref()
+                .map(|f| match f.sse_format {
+                    SseFormat::OpenAI => "data: [DONE]",
+                    SseFormat::Anthropic => "\"type\":\"message_stop\"",
+                })
+                .unwrap_or("data: [DONE]");
+            if s.contains(done_marker) {
                 self.saw_done = true;
             }
             let chunk = b.clone();
@@ -681,6 +841,65 @@ fn last_usage_from_sse(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
         }
     }
     out
+}
+
+/// Scan an assembled Anthropic SSE stream for token counts.
+/// `message_start` carries `input_tokens`; `message_delta` carries the final
+/// `output_tokens`.
+fn last_usage_from_anthropic_sse(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
+    let mut input: Option<i64> = None;
+    let mut output: Option<i64> = None;
+    for line in body.lines() {
+        let Some(rest) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(rest.trim()) else {
+            continue;
+        };
+        if let Some(n) = v["message"]["usage"]["input_tokens"].as_i64() {
+            input = Some(n);
+        }
+        if let Some(n) = v["usage"]["output_tokens"].as_i64() {
+            output = Some(n);
+        }
+    }
+    let total = input.zip(output).map(|(i, o)| i + o);
+    (input, output, total)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_raw(
+    state: &AppState,
+    provider: &str,
+    model_id: &str,
+    status: u16,
+    started: Instant,
+    stream: bool,
+    request_body: &str,
+    response_body: &str,
+    prompt_tokens: Option<i64>,
+    completion_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+    error: Option<String>,
+) {
+    let Some(store) = state.usage_store.as_ref() else {
+        return;
+    };
+    store.record(UsageEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        created_at: Utc::now(),
+        provider: provider.to_string(),
+        model_id: model_id.to_string(),
+        status,
+        latency_ms: started.elapsed().as_millis() as i64,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        stream,
+        request_body: truncate_body(request_body.to_string(), state.max_body_bytes),
+        response_body: truncate_body(response_body.to_string(), state.max_body_bytes),
+        error,
+    });
 }
 
 #[cfg(test)]
