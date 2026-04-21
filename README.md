@@ -37,15 +37,59 @@ non-streaming and streaming (`stream: true`).
 
 ## Install
 
-From source:
+### macOS (universal binary — Intel + Apple Silicon)
+
+```bash
+curl -L https://github.com/TomeHirata/llm-proxy/releases/latest/download/llmproxy-$(git ls-remote --tags https://github.com/TomeHirata/llm-proxy | awk -F/ '{print $NF}' | grep '^v' | sort -V | tail -1)-universal-apple-darwin.tar.gz \
+  | tar -xz
+sudo mv llmproxy-*/llmproxy /usr/local/bin/llmproxy
+# Clear Gatekeeper quarantine if prompted on first run:
+xattr -d com.apple.quarantine /usr/local/bin/llmproxy
+```
+
+Or with a pinned version:
+
+```bash
+VERSION=v0.1.0
+curl -L "https://github.com/TomeHirata/llm-proxy/releases/download/${VERSION}/llmproxy-${VERSION}-universal-apple-darwin.tar.gz" \
+  | tar -xz
+sudo mv "llmproxy-${VERSION}-universal-apple-darwin/llmproxy" /usr/local/bin/llmproxy
+xattr -d com.apple.quarantine /usr/local/bin/llmproxy
+```
+
+### Debian / Ubuntu (APT)
+
+```bash
+# Add the signing key
+curl -fsSL https://tomehirata.github.io/llm-proxy/apt/pubkey.asc \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/llmproxy.gpg
+
+# Add the repository (replace <codename> with bookworm / trixie / jammy / noble)
+echo "deb [signed-by=/etc/apt/keyrings/llmproxy.gpg] \
+  https://tomehirata.github.io/llm-proxy/apt <codename> main" \
+  | sudo tee /etc/apt/sources.list.d/llmproxy.list
+
+sudo apt-get update
+sudo apt-get install llmproxy
+```
+
+### Linux (binary tarball)
+
+```bash
+VERSION=v0.1.0
+# For x86_64:
+curl -L "https://github.com/TomeHirata/llm-proxy/releases/download/${VERSION}/llmproxy-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+  | tar -xz
+sudo mv "llmproxy-${VERSION}-x86_64-unknown-linux-gnu/llmproxy" /usr/local/bin/llmproxy
+# For arm64: replace x86_64-unknown-linux-gnu with aarch64-unknown-linux-gnu
+```
+
+### From source
 
 ```bash
 cargo build --release -p llmproxy-server
 ./target/release/llmproxy serve
 ```
-
-Cross-platform binaries and a Debian `.deb` are produced by the release
-workflow in `.github/workflows/release.yml` for tagged builds.
 
 ## Usage
 
