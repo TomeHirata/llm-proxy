@@ -194,13 +194,41 @@ providers:
 
 See `config.example.yaml` for the full schema.
 
+## Recipes
+
+### Claude Code
+
+Route Claude Code through the proxy to track usage and latency:
+
+```bash
+llmproxy serve --daemon
+export ANTHROPIC_BASE_URL="http://localhost:8080/anthropic"
+claude
+```
+
+Then inspect what was sent:
+
+```bash
+llmproxy usage summary
+llmproxy usage recent --verbose
+```
+
+### Cursor / VS Code Copilot
+
+```bash
+export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
+```
+
 ## Endpoints
 
-| Method | Path                   | Notes                                       |
-|--------|------------------------|---------------------------------------------|
-| POST   | `/v1/chat/completions` | Standard OpenAI shape; `stream: true` uses SSE |
-| GET    | `/v1/models`           | Lists configured provider keys               |
-| GET    | `/health`              | Returns `ok`                                 |
+| Method | Path                                            | Notes                                          |
+|--------|-------------------------------------------------|------------------------------------------------|
+| POST   | `/v1/chat/completions`                          | Unified OpenAI shape; `stream: true` uses SSE  |
+| GET    | `/v1/models`                                    | Lists configured provider keys                 |
+| GET    | `/health`                                       | Returns `ok`                                   |
+| POST   | `/openai/v1/responses`                          | OpenAI Responses API passthrough               |
+| POST   | `/anthropic/v1/messages`                        | Anthropic Messages API passthrough             |
+| POST   | `/gemini/v1beta/models/:model/generateContent`  | Gemini generateContent passthrough             |
 
 ## Project layout
 
