@@ -102,41 +102,45 @@ jobs:
             codename: bookworm
             arch: amd64
             platform: linux/amd64
+            runner: ubuntu-latest
           - distro: debian
             codename: bookworm
             arch: arm64
             platform: linux/arm64
+            runner: ubuntu-24.04-arm
           - distro: debian
             codename: trixie
             arch: amd64
             platform: linux/amd64
+            runner: ubuntu-latest
           - distro: debian
             codename: trixie
             arch: arm64
             platform: linux/arm64
+            runner: ubuntu-24.04-arm
           - distro: ubuntu
             codename: jammy
             arch: amd64
             platform: linux/amd64
+            runner: ubuntu-latest
           - distro: ubuntu
             codename: jammy
             arch: arm64
             platform: linux/arm64
+            runner: ubuntu-24.04-arm
           - distro: ubuntu
             codename: noble
             arch: amd64
             platform: linux/amd64
+            runner: ubuntu-latest
           - distro: ubuntu
             codename: noble
             arch: arm64
             platform: linux/arm64
-    runs-on: ubuntu-latest
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-        if: matrix.arch == 'arm64'
-        with:
-          platforms: arm64
       - name: Build .deb
         run: |
           docker run --rm --platform ${{ matrix.platform }} \
