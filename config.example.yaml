@@ -34,9 +34,10 @@ providers:
     api_version: "2024-02-01"
 
 # Persistent request/response log with per-request metrics and token usage.
-# Opt-in because captured prompts/responses may contain sensitive content.
+# Enabled by default. Set to false to disable. The Authorization header is
+# never recorded.
 usage_log:
-  enabled: false
+  enabled: true
   retention_days: 30
   # Only `${ENV_VAR}` interpolation is applied — `~` is not expanded.
   # path: ${HOME}/.local/share/llmproxy/usage.sqlite

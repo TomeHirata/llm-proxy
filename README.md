@@ -110,27 +110,25 @@ llmproxy usage recent          # most recent log entries
 llmproxy usage prune           # one-shot retention cleanup
 ```
 
-### Usage log (opt-in)
+### Usage log
 
-Enable `usage_log.enabled: true` in config to persist a row per request —
-request + response bodies, HTTP status, latency, and token counts — into a
-local SQLite database. Rows older than `retention_days` (default 30) are
+Enabled by default. Every request is persisted — provider, model, status,
+latency, token counts, and truncated request/response bodies — into a local
+SQLite database at `~/.local/share/llmproxy/usage.sqlite`. The `Authorization`
+header is never recorded. Rows older than `retention_days` (default 30) are
 pruned hourly.
-
-```yaml
-usage_log:
-  enabled: true
-  retention_days: 30
-  # path: ${HOME}/.local/share/llmproxy/usage.sqlite
-```
 
 ```bash
 llmproxy usage summary --since 7d
-llmproxy usage recent --limit 50
+llmproxy usage recent --limit 50 --verbose
 ```
 
-Disabled by default because captured prompts/responses can contain sensitive
-content. The `Authorization` header is never logged.
+To disable, set `usage_log.enabled: false` in config:
+
+```yaml
+usage_log:
+  enabled: false
+```
 
 ### Routing
 

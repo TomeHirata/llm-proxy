@@ -549,7 +549,7 @@ fn data_dir() -> PathBuf {
 
 fn open_store_or_error(cfg: &AppConfig) -> anyhow::Result<UsageStore> {
     if !cfg.usage_log.enabled {
-        bail!("usage log is disabled — set usage_log.enabled: true in config");
+        bail!("usage log is disabled — set usage_log.enabled: true in config (enabled by default)");
     }
     let path = cfg
         .usage_log
@@ -700,10 +700,10 @@ providers:
     endpoint: https://my-resource.openai.azure.com
     api_version: "2024-02-01"
 
-# Persistent request/response log. Opt-in: captured prompts/responses can
-# contain sensitive content, so keep this disabled unless you need it.
+# Persistent request/response log. Enabled by default; set to false to disable.
+# Logs are stored locally — the Authorization header is never recorded.
 usage_log:
-  enabled: false
+  enabled: true
   retention_days: 30
   # path: ${HOME}/.local/share/llmproxy/usage.sqlite
 "#;
