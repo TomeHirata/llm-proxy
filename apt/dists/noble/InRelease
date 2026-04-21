@@ -1,0 +1,48 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: llmproxy
+Label: llmproxy
+Suite: stable
+Codename: noble
+Date: Tue, 21 Apr 2026 02:37:13 UTC
+Architectures: amd64 arm64
+Components: main
+Description: llmproxy APT repository for Ubuntu 24.04 (noble)
+MD5Sum:
+ 2722a4b50e62595137531eec3b808f99 730 main/binary-amd64/Packages
+ 0993bd0e1fe262c7955eb1e60dd234f3 498 main/binary-amd64/Packages.gz
+ c517af75447898c51c1e48c7881c63d2 147 main/binary-amd64/Release
+ a089bd0e131bf266029ae8cdeeebdf2b 730 main/binary-arm64/Packages
+ 32af5e2f8a0aa3bdd3b8f2917194fc63 495 main/binary-arm64/Packages.gz
+ c2c51f4a7f6c8f99d4997c5c4ae73359 147 main/binary-arm64/Release
+SHA1:
+ 017ebfad8520ba1fcbca0fe8e22b44397fc6453a 730 main/binary-amd64/Packages
+ 07fb58ad5413c84d16337826f57d22b52515e53a 498 main/binary-amd64/Packages.gz
+ 35c4e42f9488d85895bc409abacda60e7bc78a0d 147 main/binary-amd64/Release
+ d31b6cbdf38cf92fbc7c701b3377f040fe468f4d 730 main/binary-arm64/Packages
+ 5ad10d578940b9e0a542efe23a1d5c08d696571d 495 main/binary-arm64/Packages.gz
+ a6d3210e5201196521c8bd010252b1b22c45bc20 147 main/binary-arm64/Release
+SHA256:
+ a7895483af168645199320c1a3b3ca5e8da626c9e34306f7884632425fb72b72 730 main/binary-amd64/Packages
+ 2f5ddd01128fec9387438c18682c078c64eb432c0f13080af6b37536d9b9efd1 498 main/binary-amd64/Packages.gz
+ 5d8008051dd08b923804d93a9b62da4ef194a777f0079a91ad8d8a01ffc0590e 147 main/binary-amd64/Release
+ 23d7218765d103d1162a2e128d1157bb93bf488c94dcf2b17a9a1ab53c4743bb 730 main/binary-arm64/Packages
+ a9f710b4376cc42ae1557ab30bc07ccbe1acd218d48224e9f9411fe59b50f318 495 main/binary-arm64/Packages.gz
+ b4ad9824b1cab45e6948282ebe1a8d1f8a62431f7577168aa5810f8fba8dc077 147 main/binary-arm64/Release
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEELdF028EG77NBA1hQpLqMNWuwAJwFAmnm4tkACgkQpLqMNWuw
+AJzTfg//bTPZZ3vuB+NXuV3TM7vMu2FQ7vdDnURLZEFs8VYwvtCvi4sprOKAj2QZ
+cIOmW7xynwcrxoX1MKLZirEU5Z4T+gx8pKNp813JVYbmTWBXMa39snGQ6LIkqC8B
+z04UD3cCk7U99G0Pm+VcW/C5VrnLZcIwXTQVGAN2/ZXTPMBNcbxEAwgjWyfvBG52
+txcSkkkBlkjPSez1Og+adNsucE5M1AyolF6eC4KEnsrZLnYxn2pVNChgZgRmIDKf
+RqroMnzgiolsa5vFZlScCOz1Tq7e9leFaNr8eA+zFmqCWcE5/bFeopN0/LJ321wc
+ugz9rqzAmpwIfnBk4KmtnIhf6LL2iOuKwMC6fl5WlIEGgtFHDU21KYMhjVt4mCgI
+ylQSzVHvE2J7TtzWSEVBPNmKnjpKV4uYpwEw2g5wLcem7Ti/+umqHi4ft03XDnBT
+I8o1DkUwE2shgS1Glg0dqxHKT7Atp5yBHXlhaGoJtjp7ZHhPWurjm+0o7xbbAfv7
+s6gp/4+vEbluo0Orxl+xKKPYQMwN27t7ae4RaLlFt4fpqT2TBo1et7PE3IFO7WBj
+aWleAzNPnv9a+P618UmfnLFzINeUfCrm0yfMfYITKgPrV8OBQIuTSZn13a5VJvnR
+nT0gQrr6oqeL262w61YUNCn+Nf19WeIzVSYNUh/4xnNW0M0xufE=
+=exIj
+-----END PGP SIGNATURE-----

@@ -1,0 +1,6 @@
+Archive: testing
+Component: main
+Origin: llmproxy
+Label: llmproxy
+Architecture: amd64
+Description: llmproxy APT repository for Debian trixie

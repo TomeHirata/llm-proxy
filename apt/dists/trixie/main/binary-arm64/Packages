@@ -1,0 +1,18 @@
+Package: llmproxy-server
+Version: 0.1.0-1~trixie
+Architecture: arm64
+Maintainer: Tome Hirata <tomehirata@users.noreply.github.com>
+Installed-Size: 9125
+Depends: libc6 (>= 2.39), libssl3t64 (>= 3.0.0)
+Priority: optional
+Section: net
+Filename: pool/main/l/llmproxy-server/llmproxy-server_0.1.0-1~trixie_arm64.deb
+Size: 2777404
+SHA256: b15ba36418656415ce0fbf82a9d6288ed25e259b8c021a6a4ef1d6a55e9e98e2
+SHA1: a93147db9a6d6c0086aee4d6f58514189e4c57da
+MD5sum: 9d814ff60324507deed4cf478aef7e88
+Description: LLM proxy server with unified API for multiple providers
+ llmproxy is a local proxy server that exposes a unified API for multiple LLM
+ providers (OpenAI, Anthropic, Google, etc.), with usage logging, metrics, and
+ request routing.
+

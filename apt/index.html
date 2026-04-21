@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>llmproxy APT repository</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    code, pre { background: #f4f4f4; border-radius: 4px; }
+    code { padding: 0.1em 0.3em; }
+    pre { padding: 0.75rem 1rem; overflow-x: auto; }
+    h1 { margin-top: 0; }
+  </style>
+</head>
+<body>
+  <h1>llmproxy APT repository</h1>
+  <p>This page hosts the Debian/Ubuntu package repository for <code>llmproxy</code>.</p>
+  <p>Supported suites: <code>bookworm</code>, <code>trixie</code>, <code>jammy</code>, <code>noble</code>. Architectures: <code>amd64</code>, <code>arm64</code>.</p>
+  <h2>Install</h2>
+  <pre><code>sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://&lt;owner&gt;.github.io/llm-proxy/apt/pubkey.asc \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/llmproxy.gpg
+echo "deb [signed-by=/etc/apt/keyrings/llmproxy.gpg] https://&lt;owner&gt;.github.io/llm-proxy/apt $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/llmproxy.list
+sudo apt-get update
+sudo apt-get install llmproxy</code></pre>
+  <p>Replace <code>&lt;owner&gt;</code> with the GitHub organization/user hosting this repo (all-lowercase).</p>
+  <p><a href="pubkey.asc">Download signing public key</a></p>
+</body>
+</html>

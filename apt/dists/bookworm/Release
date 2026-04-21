@@ -1,0 +1,29 @@
+Origin: llmproxy
+Label: llmproxy
+Suite: stable
+Codename: bookworm
+Date: Tue, 21 Apr 2026 02:37:12 UTC
+Architectures: amd64 arm64
+Components: main
+Description: llmproxy APT repository for Debian bookworm
+MD5Sum:
+ 8124f4acc376545c0bd8aaf19a6e4771 733 main/binary-amd64/Packages
+ 9c784b3dfa517f3256e627c1b815be4b 499 main/binary-amd64/Packages.gz
+ 79844a908b3369ee74751c3e5f91a28b 142 main/binary-amd64/Release
+ 6052f06bc5706e044b07331b085c7c02 733 main/binary-arm64/Packages
+ ae4e63d1f803d2ed5832fe4d22b5032c 498 main/binary-arm64/Packages.gz
+ f1090aca5e7d362ef6a5f9acb07faefd 142 main/binary-arm64/Release
+SHA1:
+ abcb2875345d3e79af7470db86be67eaede11e97 733 main/binary-amd64/Packages
+ 5de0a128fa671ebf051d39fb618ff0e3cdb4972b 499 main/binary-amd64/Packages.gz
+ a9f92892b2f0625c3e27539f9563b9801bab967d 142 main/binary-amd64/Release
+ bebe07bc7977e5570c7948bbd2ecfbdf374a4f6c 733 main/binary-arm64/Packages
+ 676c4ad196c3dd7cf17445cddcb331c2682d035d 498 main/binary-arm64/Packages.gz
+ d1af2a69afb26574d15f84345b8c1cb5c218b93a 142 main/binary-arm64/Release
+SHA256:
+ 84be05837eb54320a87082030e93fede39c00e15798fdbc8c69b9385b958cbe9 733 main/binary-amd64/Packages
+ fd4f9f5594472eab947bc1459098de45faedd80496f101cc282ea5ea8531fc23 499 main/binary-amd64/Packages.gz
+ 3d8474cfb139c5019d8d9b20bf4edec1b13efdf76ac0393a3ae2c9b20d7904f2 142 main/binary-amd64/Release
+ 18dbf973b7730a70ccf9774a08f562e26aa6cc9b30c878f6a8ace6555a6669c3 733 main/binary-arm64/Packages
+ 6974f67fda934eb2c8631c7cad3a2e6b8094c450bd81e498cd4ec1dd2b4e78b6 498 main/binary-arm64/Packages.gz
+ 2bdd65b66e09db9c2bda926dbf22099f9b3dcf8e00ca82093e27abd9a315171f 142 main/binary-arm64/Release

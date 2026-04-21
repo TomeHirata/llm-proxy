@@ -1,0 +1,18 @@
+Package: llmproxy-server
+Version: 0.1.0-1~bookworm
+Architecture: arm64
+Maintainer: Tome Hirata <tomehirata@users.noreply.github.com>
+Installed-Size: 8997
+Depends: libc6 (>= 2.34), libssl3 (>= 3.0.0)
+Priority: optional
+Section: net
+Filename: pool/main/l/llmproxy-server/llmproxy-server_0.1.0-1~bookworm_arm64.deb
+Size: 2752076
+SHA256: d19840154b34a7c1250822b05dd777e399d275d403dcdb7b407d58b0424a529e
+SHA1: 52c90d14a68c51c5b8d0ea9e888ff7d01a3e0dca
+MD5sum: f5e5c63b67b8822ba02921191493de45
+Description: LLM proxy server with unified API for multiple providers
+ llmproxy is a local proxy server that exposes a unified API for multiple LLM
+ providers (OpenAI, Anthropic, Google, etc.), with usage logging, metrics, and
+ request routing.
+

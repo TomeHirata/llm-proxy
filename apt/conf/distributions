@@ -1,0 +1,35 @@
+Origin: llmproxy
+Label: llmproxy
+Suite: stable
+Codename: bookworm
+Architectures: amd64 arm64
+Components: main
+Description: llmproxy APT repository for Debian bookworm
+SignWith: A4BA8C356BB0009C
+
+Origin: llmproxy
+Label: llmproxy
+Suite: testing
+Codename: trixie
+Architectures: amd64 arm64
+Components: main
+Description: llmproxy APT repository for Debian trixie
+SignWith: A4BA8C356BB0009C
+
+Origin: llmproxy
+Label: llmproxy
+Suite: stable
+Codename: jammy
+Architectures: amd64 arm64
+Components: main
+Description: llmproxy APT repository for Ubuntu 22.04 (jammy)
+SignWith: A4BA8C356BB0009C
+
+Origin: llmproxy
+Label: llmproxy
+Suite: stable
+Codename: noble
+Architectures: amd64 arm64
+Components: main
+Description: llmproxy APT repository for Ubuntu 24.04 (noble)
+SignWith: A4BA8C356BB0009C

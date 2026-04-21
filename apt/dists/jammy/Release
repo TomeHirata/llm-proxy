@@ -1,0 +1,29 @@
+Origin: llmproxy
+Label: llmproxy
+Suite: stable
+Codename: jammy
+Date: Tue, 21 Apr 2026 02:37:12 UTC
+Architectures: amd64 arm64
+Components: main
+Description: llmproxy APT repository for Ubuntu 22.04 (jammy)
+MD5Sum:
+ 21399ce559e898831898f48ac7d88b35 735 main/binary-amd64/Packages
+ 0aa246832b6b3e710fedc08f5d74ea6b 503 main/binary-amd64/Packages.gz
+ 8258f0f0f1efbb97b661624debf94a4c 147 main/binary-amd64/Release
+ 683d61019ba1991ee5c442760697c245 735 main/binary-arm64/Packages
+ c23e3404317e30c2cfdb010aafd3c614 501 main/binary-arm64/Packages.gz
+ 5faa806b5c93af96688e04e5e80a5e8f 147 main/binary-arm64/Release
+SHA1:
+ efe735520dbe0d100b3028907809dbe17a56240b 735 main/binary-amd64/Packages
+ 297f9ee9184f9db7979392b02bccc21bcd9486e3 503 main/binary-amd64/Packages.gz
+ 85ab68f2de55548d5265e80aa052f4764fbba9b7 147 main/binary-amd64/Release
+ 79e4bfde7dfff385266e5de461e56adff484ae88 735 main/binary-arm64/Packages
+ 9a2ad464debfdbe291ef0fcdf9cd3035b128ba68 501 main/binary-arm64/Packages.gz
+ 027d1cc581d6c8812d78ca12334116801d594664 147 main/binary-arm64/Release
+SHA256:
+ af4beb4fd084b24f425bee7c9f92808657e10e4c332e9f60adaf771967bb2685 735 main/binary-amd64/Packages
+ 874758bc682cb51f6012b56ec642512e8dab106a463ed3998cc6fdbc6cac7101 503 main/binary-amd64/Packages.gz
+ 45f48273a1cb2e093eee98aa9cbe2b690904a8b3fc5192e7c4d4c31db4b91fc1 147 main/binary-amd64/Release
+ 029175e14e99bf8a15c03e0d614441cee69a240fe4adc46c8ff7ac99a7212729 735 main/binary-arm64/Packages
+ 4c068eefe75d232834df88bfc34f312856a6a7b5bf8e1e99d5a3a42c8cff28a0 501 main/binary-arm64/Packages.gz
+ 98e8896a4cdc63bf74e244a3e2f41c1b72c2a71eea8d2131c9edba71cc9f19a9 147 main/binary-arm64/Release

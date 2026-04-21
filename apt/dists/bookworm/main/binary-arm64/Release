@@ -1,0 +1,6 @@
+Archive: stable
+Component: main
+Origin: llmproxy
+Label: llmproxy
+Architecture: arm64
+Description: llmproxy APT repository for Debian bookworm
