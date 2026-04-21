@@ -30,10 +30,9 @@ supported if you'd rather keep keys out of your shell environment.
 | `togetherai`   | passthrough                                 | `TOGETHERAI_API_KEY` / header / config              |
 | `anthropic`    | translation + SSE                           | `ANTHROPIC_API_KEY` / header / config               |
 | `gemini`       | translation + SSE                           | `GEMINI_API_KEY` / header / config                  |
-| `bedrock`      | Converse API, SigV4-signed (non-streaming)  | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` |
+| `bedrock`      | Converse API, SigV4-signed                  | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` |
 
-Bedrock streaming is deferred to v0.2. All other providers support both
-non-streaming and streaming (`stream: true`).
+All providers support both non-streaming and streaming (`stream: true`).
 
 ## Install
 
@@ -251,8 +250,8 @@ cargo build --release -p llmproxy-server
 ## Roadmap
 
 - **v0.1** (this release) — OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral,
-  TogetherAI. Chat + streaming. Daemon + autostart on macOS/Linux.
-- **v0.2** — Cohere, HuggingFace TGI, Bedrock streaming, `/v1/embeddings`.
+  TogetherAI. Chat + streaming (all providers). Daemon + autostart on macOS/Linux.
+- **v0.2** — Cohere, HuggingFace TGI, `/v1/embeddings`.
 - **v0.3** — MLflow Model Serving, AI21Labs.
 - **v1.0** — JSONL request log, full tool-call passthrough for translation
   providers.
