@@ -36,7 +36,7 @@ pub struct UsageLogConfig {
 impl Default for UsageLogConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             retention_days: default_retention_days(),
             path: None,
             max_body_bytes: default_max_body_bytes(),
