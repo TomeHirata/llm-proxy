@@ -337,6 +337,18 @@ pub fn extract_tokens(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
     )
 }
 
+/// Extract token counts from an Anthropic `/v1/messages` response body.
+/// Anthropic uses `input_tokens` / `output_tokens` in the `usage` object.
+pub fn extract_tokens_anthropic(body: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return (None, None, None);
+    };
+    let input = v["usage"]["input_tokens"].as_i64();
+    let output = v["usage"]["output_tokens"].as_i64();
+    let total = input.zip(output).map(|(i, o)| i + o);
+    (input, output, total)
+}
+
 /// Parse a CLI `--since` value. Handles the shorthand units `d` / `w` that
 /// `humantime` does not understand (e.g. `7d`, `2w`); everything else is
 /// delegated to `humantime::parse_duration`, so `10ms`, `2h 30min`, etc. all
