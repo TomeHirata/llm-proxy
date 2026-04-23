@@ -23,9 +23,6 @@ pub fn run() {
                 .visible(false)
                 .build()?;
 
-            // Show immediately — tray is already registered at this point.
-            let _ = win.show();
-
             // macOS: clicking the red close button hides rather than destroys.
             #[cfg(target_os = "macos")]
             let _ = win.set_closable(true);
