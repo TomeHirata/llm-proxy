@@ -32,6 +32,7 @@ interface Props {
 
 export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const [modelsByProvider, setModelsByProvider] = useState<Record<string, string[]>>({});
+  const [modelErrors, setModelErrors] = useState<Record<string, string>>({});
   const [loadingModels, setLoadingModels] = useState(false);
 
   // Two-step selection: provider → model
@@ -59,17 +60,22 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       configuredProviders.map(async (p) => {
         try {
           const r = await fetch(`${PROXY_BASE}/admin/models/${p}`);
-          if (!r.ok) throw new Error();
-          const j: { models: string[] } = await r.json();
-          return [p, j.models] as const;
+          const j = await r.json();
+          if (!r.ok) return { p, models: FALLBACK_MODELS[p] ?? [], error: j.error as string | undefined };
+          return { p, models: j.models as string[], error: undefined };
         } catch {
-          return [p, FALLBACK_MODELS[p] ?? []] as const;
+          return { p, models: FALLBACK_MODELS[p] ?? [], error: undefined };
         }
       })
     ).then((results) => {
       const map: Record<string, string[]> = {};
-      for (const [p, models] of results) map[p] = models;
+      const errs: Record<string, string> = {};
+      for (const { p, models, error } of results) {
+        map[p] = models;
+        if (error) errs[p] = error;
+      }
       setModelsByProvider(map);
+      setModelErrors(errs);
       setLoadingModels(false);
 
       // Auto-select first model for the current provider (or first provider with models)
@@ -214,6 +220,11 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
             onChange={(e) => setCustomModel(e.target.value)}
           />
         ) : (
+          {selectedProvider && modelErrors[selectedProvider] && !loadingModels ? (
+          <div className="flex-1 min-w-[200px] text-xs text-red-500 px-2 py-1 border border-red-200 rounded bg-red-50 truncate" title={modelErrors[selectedProvider]}>
+            {modelErrors[selectedProvider]}
+          </div>
+        ) : (
           <select
             className="flex-1 min-w-[200px] text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
             value={selectedModel}
@@ -228,6 +239,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
               <option key={id} value={id}>{id}</option>
             ))}
           </select>
+        )}
         )}
 
         {/* Custom toggle */}

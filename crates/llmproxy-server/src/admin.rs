@@ -289,7 +289,7 @@ async fn provider_models_handler(
         }
     };
 
-    let models: Vec<String> = match provider.as_str() {
+    let result: Result<Vec<String>, String> = match provider.as_str() {
         "openai" => fetch_openai_models(&s.http, &token).await,
         "anthropic" => fetch_anthropic_models(&s.http, &token).await,
         "gemini" => fetch_gemini_models(&s.http, &token).await,
@@ -308,21 +308,32 @@ async fn provider_models_handler(
         }
     };
 
-    Json(json!({"models": models})).into_response()
+    match result {
+        Ok(models) => Json(json!({"models": models})).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({"error": e}))).into_response(),
+    }
 }
 
-async fn fetch_openai_models(client: &reqwest::Client, token: &str) -> Vec<String> {
-    let Ok(resp) = client
+async fn fetch_openai_models(client: &reqwest::Client, token: &str) -> Result<Vec<String>, String> {
+    let resp = client
         .get("https://api.openai.com/v1/models")
         .bearer_auth(token)
         .send()
         .await
-    else {
-        return vec![];
-    };
-    let Ok(body) = resp.json::<Value>().await else {
-        return vec![];
-    };
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let msg = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| body.clone());
+        return Err(format!("OpenAI API error {status}: {msg}"));
+    }
+    let body = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("parse error: {e}"))?;
     let mut ids: Vec<String> = body["data"]
         .as_array()
         .map(|arr| {
@@ -334,7 +345,7 @@ async fn fetch_openai_models(client: &reqwest::Client, token: &str) -> Vec<Strin
         })
         .unwrap_or_default();
     ids.sort();
-    ids
+    Ok(ids)
 }
 
 fn is_chat_model_openai(id: &str) -> bool {
@@ -357,19 +368,30 @@ fn is_chat_model_openai(id: &str) -> bool {
     keep.iter().any(|p| id.starts_with(p)) && !drop.iter().any(|p| id.contains(p))
 }
 
-async fn fetch_anthropic_models(client: &reqwest::Client, token: &str) -> Vec<String> {
-    let Ok(resp) = client
+async fn fetch_anthropic_models(
+    client: &reqwest::Client,
+    token: &str,
+) -> Result<Vec<String>, String> {
+    let resp = client
         .get("https://api.anthropic.com/v1/models")
         .header("x-api-key", token)
         .header("anthropic-version", "2023-06-01")
         .send()
         .await
-    else {
-        return vec![];
-    };
-    let Ok(body) = resp.json::<Value>().await else {
-        return vec![];
-    };
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let msg = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| body.clone());
+        return Err(format!("Anthropic API error {status}: {msg}"));
+    }
+    let body = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("parse error: {e}"))?;
     let mut ids: Vec<String> = body["data"]
         .as_array()
         .map(|arr| {
@@ -380,19 +402,31 @@ async fn fetch_anthropic_models(client: &reqwest::Client, token: &str) -> Vec<St
         })
         .unwrap_or_default();
     ids.sort_by(|a, b| b.cmp(a)); // newest first
-    ids
+    Ok(ids)
 }
 
-async fn fetch_gemini_models(client: &reqwest::Client, token: &str) -> Vec<String> {
+async fn fetch_gemini_models(client: &reqwest::Client, token: &str) -> Result<Vec<String>, String> {
     let mut url =
         reqwest::Url::parse("https://generativelanguage.googleapis.com/v1beta/models").unwrap();
     url.query_pairs_mut().append_pair("key", token);
-    let Ok(resp) = client.get(url).send().await else {
-        return vec![];
-    };
-    let Ok(body) = resp.json::<Value>().await else {
-        return vec![];
-    };
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let msg = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| body.clone());
+        return Err(format!("Gemini API error {status}: {msg}"));
+    }
+    let body = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("parse error: {e}"))?;
     let mut ids = Vec::new();
     if let Some(arr) = body["models"].as_array() {
         for m in arr {
@@ -411,20 +445,33 @@ async fn fetch_gemini_models(client: &reqwest::Client, token: &str) -> Vec<Strin
         }
     }
     ids.sort();
-    ids
+    Ok(ids)
 }
 
 async fn fetch_openai_compat_models(
     client: &reqwest::Client,
     token: &str,
     url: &str,
-) -> Vec<String> {
-    let Ok(resp) = client.get(url).bearer_auth(token).send().await else {
-        return vec![];
-    };
-    let Ok(body) = resp.json::<Value>().await else {
-        return vec![];
-    };
+) -> Result<Vec<String>, String> {
+    let resp = client
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let msg = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| body.clone());
+        return Err(format!("API error {status}: {msg}"));
+    }
+    let body = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("parse error: {e}"))?;
     let mut ids: Vec<String> = body["data"]
         .as_array()
         .map(|arr| {
@@ -435,5 +482,5 @@ async fn fetch_openai_compat_models(
         })
         .unwrap_or_default();
     ids.sort();
-    ids
+    Ok(ids)
 }
