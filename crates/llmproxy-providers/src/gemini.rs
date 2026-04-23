@@ -238,9 +238,9 @@ impl Provider for GeminiProvider {
                 let chunk = chunk.map_err(ProxyError::from)?;
                 buf.extend_from_slice(&chunk);
 
-                while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
-                    let raw = buf.drain(..pos + 2).collect::<Vec<u8>>();
-                    let event = std::str::from_utf8(&raw[..raw.len().saturating_sub(2)])
+                while let Some((pos, sep_len)) = find_event_boundary(&buf) {
+                    let raw = buf.drain(..pos + sep_len).collect::<Vec<u8>>();
+                    let event = std::str::from_utf8(&raw[..raw.len().saturating_sub(sep_len)])
                         .map_err(|e| ProxyError::Stream(e.to_string()))?;
                     for out_chunk in translate_gemini_event(event, &chat_id, created, &model_id, &mut first_delta) {
                         yield out_chunk;
@@ -254,6 +254,21 @@ impl Provider for GeminiProvider {
     }
 }
 
+/// Find an SSE event boundary (`\n\n` or `\r\n\r\n`).
+/// Returns `(position of boundary start, boundary byte length)`.
+fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+    let len = buf.len();
+    for i in 0..len {
+        if i + 3 < len && &buf[i..i + 4] == b"\r\n\r\n" {
+            return Some((i, 4));
+        }
+        if i + 1 < len && buf[i] == b'\n' && buf[i + 1] == b'\n' {
+            return Some((i, 2));
+        }
+    }
+    None
+}
+
 fn translate_gemini_event(
     event: &str,
     chat_id: &str,
@@ -263,6 +278,7 @@ fn translate_gemini_event(
 ) -> Vec<Bytes> {
     let mut data_line = String::new();
     for line in event.split('\n') {
+        let line = line.trim_end_matches('\r');
         if let Some(rest) = line.strip_prefix("data:") {
             if !data_line.is_empty() {
                 data_line.push('\n');
