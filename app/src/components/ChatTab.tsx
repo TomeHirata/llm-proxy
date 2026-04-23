@@ -194,19 +194,11 @@ export default function ChatTab({ proxyOnline }: Props) {
             value={model}
             onChange={(e) => setModel(e.target.value)}
           >
-            {providers.map((p) => {
-              const presets = PRESET_MODELS[p] ?? [];
-              if (!presets.length) return null;
-              return (
-                <optgroup key={p} label={p}>
-                  {presets.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </optgroup>
-              );
-            })}
+            {providers.flatMap((p) =>
+              (PRESET_MODELS[p] ?? []).map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))
+            )}
           </select>
         )}
         <button

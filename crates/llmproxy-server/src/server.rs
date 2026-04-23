@@ -13,7 +13,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use llmproxy_core::{error::ProxyError, openai_types::ChatRequest};
 use serde_json::json;
-use tower_http::trace::TraceLayer;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
     config::AppConfig,
@@ -64,6 +64,7 @@ pub fn router(state: AppState) -> Router {
             post(gemini_generate_content_handler),
         )
         .merge(admin_routes())
+        .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -930,11 +931,16 @@ mod tests {
     /// credential-missing path returns 401 without hitting any upstream.
     fn state_no_creds() -> AppState {
         use crate::{config::AppConfig, registry::ProviderRegistry};
+        let cfg = AppConfig::default();
         AppState {
-            registry: std::sync::Arc::new(ProviderRegistry::from_config(&AppConfig::default())),
+            registry: std::sync::Arc::new(ProviderRegistry::from_config(&cfg)),
             usage_store: None,
             http: reqwest::Client::new(),
             max_body_bytes: 1024,
+            cfg: std::sync::Arc::new(cfg),
+            cfg_path: None,
+            started_at: chrono::Utc::now(),
+            version: "test",
         }
     }
 
