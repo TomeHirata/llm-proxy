@@ -13,9 +13,10 @@ use chrono::Utc;
 use futures::StreamExt;
 use llmproxy_core::{error::ProxyError, openai_types::ChatRequest};
 use serde_json::json;
-use tower_http::trace::TraceLayer;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
+    config::AppConfig,
     registry::ProviderRegistry,
     usage_log::{self, UsageEntry, UsageStore},
 };
@@ -25,10 +26,13 @@ pub struct AppState {
     pub registry: Arc<ProviderRegistry>,
     pub usage_store: Option<UsageStore>,
     pub http: reqwest::Client,
-    /// Per-entry cap on captured request/response bodies. Bodies longer than
-    /// this are truncated with a `… [truncated N bytes]` marker so one huge
-    /// response can't OOM the server.
+    /// Per-entry cap on captured request/response bodies.
     pub max_body_bytes: usize,
+    // Admin API fields
+    pub cfg: Arc<AppConfig>,
+    pub cfg_path: Option<std::path::PathBuf>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub version: &'static str,
 }
 
 /// Truncate an already-UTF-8 string to at most `limit` bytes, appending a
@@ -47,6 +51,7 @@ fn truncate_body(s: String, limit: usize) -> String {
 }
 
 pub fn router(state: AppState) -> Router {
+    use crate::admin::admin_routes;
     Router::new()
         .route("/v1/chat/completions", post(chat_handler))
         .route("/v1/models", get(models_handler))
@@ -58,6 +63,8 @@ pub fn router(state: AppState) -> Router {
             "/gemini/v1beta/models/:model_id/generateContent",
             post(gemini_generate_content_handler),
         )
+        .merge(admin_routes())
+        .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -924,11 +931,16 @@ mod tests {
     /// credential-missing path returns 401 without hitting any upstream.
     fn state_no_creds() -> AppState {
         use crate::{config::AppConfig, registry::ProviderRegistry};
+        let cfg = AppConfig::default();
         AppState {
-            registry: std::sync::Arc::new(ProviderRegistry::from_config(&AppConfig::default())),
+            registry: std::sync::Arc::new(ProviderRegistry::from_config(&cfg)),
             usage_store: None,
             http: reqwest::Client::new(),
             max_body_bytes: 1024,
+            cfg: std::sync::Arc::new(cfg),
+            cfg_path: None,
+            started_at: chrono::Utc::now(),
+            version: "test",
         }
     }
 

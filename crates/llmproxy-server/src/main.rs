@@ -1,3 +1,4 @@
+mod admin;
 mod config;
 mod registry;
 mod server;
@@ -154,6 +155,17 @@ fn init_tracing() {
 }
 
 fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    let cfg_path = args
+        .config
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("LLMPROXY_CONFIG")
+                .ok()
+                .map(std::path::PathBuf::from)
+        })
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config/llmproxy/config.yaml")));
+
     let mut cfg = load_config(args.config.as_deref())?;
     if let Some(h) = args.host {
         cfg.server.host = h;
@@ -163,10 +175,10 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
 
     if args.daemon {
-        run_as_daemon(cfg)
+        run_as_daemon(cfg, cfg_path)
     } else {
         init_tracing();
-        tokio_runtime()?.block_on(run_server(cfg))
+        tokio_runtime()?.block_on(run_server(cfg, cfg_path))
     }
 }
 
@@ -176,7 +188,7 @@ fn tokio_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
         .build()?)
 }
 
-async fn run_server(cfg: AppConfig) -> anyhow::Result<()> {
+async fn run_server(cfg: AppConfig, cfg_path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     let registry = Arc::new(ProviderRegistry::from_config(&cfg));
     let usage_store = open_usage_store_for(&cfg.usage_log)?;
     if let Some(store) = &usage_store {
@@ -188,6 +200,10 @@ async fn run_server(cfg: AppConfig) -> anyhow::Result<()> {
         usage_store,
         http: reqwest::Client::new(),
         max_body_bytes: cfg.usage_log.max_body_bytes,
+        cfg: Arc::new(cfg.clone()),
+        cfg_path,
+        started_at: chrono::Utc::now(),
+        version: env!("CARGO_PKG_VERSION"),
     };
     let app = router(state);
 
@@ -229,7 +245,7 @@ fn spawn_retention_task(store: UsageStore, retention_days: u32) {
     });
 }
 
-fn run_as_daemon(cfg: AppConfig) -> anyhow::Result<()> {
+fn run_as_daemon(cfg: AppConfig, cfg_path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     use daemonize::Daemonize;
 
     let data = data_dir();
@@ -256,7 +272,7 @@ fn run_as_daemon(cfg: AppConfig) -> anyhow::Result<()> {
         .context("failed to daemonize")?;
 
     init_tracing();
-    tokio_runtime()?.block_on(run_server(cfg))
+    tokio_runtime()?.block_on(run_server(cfg, cfg_path))
 }
 
 fn stop_daemon() -> anyhow::Result<()> {

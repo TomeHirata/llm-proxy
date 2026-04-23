@@ -3,6 +3,7 @@ members = [
     "crates/llmproxy-core",
     "crates/llmproxy-providers",
     "crates/llmproxy-server",
+    "app/src-tauri",
 ]
 resolver = "2"
 
