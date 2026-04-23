@@ -284,6 +284,7 @@ fn translate_gemini_event(
         .map(|parts| {
             parts
                 .iter()
+                .filter(|p| !p.get("thought").and_then(|v| v.as_bool()).unwrap_or(false))
                 .filter_map(|p| p.get("text").and_then(|v| v.as_str()))
                 .collect::<Vec<_>>()
                 .join("")

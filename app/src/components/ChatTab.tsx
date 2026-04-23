@@ -179,6 +179,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
     } catch (e: unknown) {
       if ((e as { name?: string }).name === "AbortError") {
         // user cancelled — leave the partial response
+        return;
       } else {
         setError(String(e));
         setMessages((prev) => prev.slice(0, -1));
@@ -187,6 +188,12 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       setStreaming(false);
       abortRef.current = null;
     }
+    // Remove the assistant bubble if no content arrived (e.g. all-thinking response)
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.role === "assistant" && !last.content) return prev.slice(0, -1);
+      return prev;
+    });
   };
 
   if (!proxyOnline) {
