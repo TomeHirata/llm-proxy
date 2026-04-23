@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { conversationStore, type Conversation } from "../conversationStore";
 
 const PROXY_BASE = "http://127.0.0.1:8080";
 
@@ -34,7 +35,6 @@ interface Attachment {
   id: string;
   name: string;
   mediaType: "image" | "audio";
-  /** Full data URL for images; base64-only for audio. */
   data: string;
   mimeType: string;
   format?: string;
@@ -107,13 +107,23 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const [modelErrors, setModelErrors] = useState<Record<string, string>>({});
   const [loadingModels, setLoadingModels] = useState(false);
 
-  // Two-step selection: provider → model
   const [selectedProvider, setSelectedProvider] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [useCustom, setUseCustom] = useState(false);
   const [customModel, setCustomModel] = useState("");
 
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>(() =>
+    conversationStore.list()
+  );
+  const [activeConvId, setActiveConvId] = useState<string | null>(() => {
+    const list = conversationStore.list();
+    return list[0]?.id ?? null;
+  });
+  const [showHistory, setShowHistory] = useState(false);
+
+  const activeConv = activeConvId ? (conversationStore.get(activeConvId) ?? null) : null;
+  const messages: Message[] = (activeConv?.messages ?? []) as Message[];
+
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -121,8 +131,8 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastSaveRef = useRef<number>(0);
 
-  // Fetch live model lists when configured providers change
   useEffect(() => {
     if (!proxyOnline || configuredProviders.length === 0) return;
 
@@ -172,6 +182,30 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
     setSelectedModel(modelsByProvider[p]?.[0] ?? "");
   };
 
+  const applyConvoModel = useCallback((model: string) => {
+    const [p, ...rest] = model.split("/");
+    const m = rest.join("/");
+    const providerAvailable = !!p && configuredProviders.includes(p);
+    const modelAvailable = !!m && (modelsByProvider[p] ?? []).includes(m);
+    if (providerAvailable && modelAvailable) {
+      setSelectedProvider(p);
+      setSelectedModel(m);
+      setCustomModel("");
+      setUseCustom(false);
+    } else {
+      setSelectedProvider("");
+      setSelectedModel("");
+      setCustomModel(model);
+      setUseCustom(true);
+    }
+  }, [configuredProviders, modelsByProvider]);
+
+  useEffect(() => {
+    if (!activeConvId) return;
+    const convo = conversationStore.get(activeConvId);
+    if (convo?.model) applyConvoModel(convo.model);
+  }, [activeConvId, applyConvoModel]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -182,75 +216,99 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       ? `${selectedProvider}/${selectedModel}`
       : "";
 
+  const newConversation = () => {
+    abortRef.current?.abort();
+    setActiveConvId(null);
+    setAttachments([]);
+    setError(null);
+    setConversations(conversationStore.list());
+  };
+
+  const loadConversation = (id: string) => {
+    abortRef.current?.abort();
+    setActiveConvId(id);
+    setAttachments([]);
+    setShowHistory(false);
+    setError(null);
+  };
+
+  const deleteConversation = (id: string) => {
+    conversationStore.remove(id);
+    if (activeConvId === id) setActiveConvId(null);
+    setConversations(conversationStore.list());
+  };
+
+  const removeAttachment = (id: string) =>
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     e.target.value = "";
     files.forEach((file) => {
       const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        const isImage = file.type.startsWith("image/");
-        const isAudio = file.type.startsWith("audio/");
-        if (!isImage && !isAudio) return;
-
+      const isImage = file.type.startsWith("image/");
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
         if (isImage) {
-          setAttachments((prev) => [
-            ...prev,
-            { id: crypto.randomUUID(), name: file.name, mediaType: "image", data: result, mimeType: file.type },
-          ]);
+          setAttachments((prev) => [...prev, {
+            id: crypto.randomUUID(),
+            name: file.name,
+            mediaType: "image",
+            data: dataUrl,
+            mimeType: file.type,
+          }]);
         } else {
-          const base64 = result.split(",")[1];
-          const format = file.type.includes("wav") ? "wav"
-            : file.type.includes("ogg") ? "ogg"
-            : file.type.includes("webm") ? "webm"
-            : "mp3";
-          setAttachments((prev) => [
-            ...prev,
-            { id: crypto.randomUUID(), name: file.name, mediaType: "audio", data: base64, mimeType: file.type, format },
-          ]);
+          const base64 = dataUrl.split(",")[1] ?? "";
+          const ext = file.name.split(".").pop()?.toLowerCase() ?? "mp3";
+          setAttachments((prev) => [...prev, {
+            id: crypto.randomUUID(),
+            name: file.name,
+            mediaType: "audio",
+            data: base64,
+            mimeType: file.type,
+            format: ext,
+          }]);
         }
       };
       reader.readAsDataURL(file);
     });
   };
 
-  const removeAttachment = (id: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
-  };
+  const canSend = (input.trim() !== "" || attachments.length > 0) && !!activeModel && !streaming;
 
   const send = async () => {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || !activeModel || streaming) return;
+    if (!canSend) return;
     setError(null);
     setInput("");
 
-    // Build message content: plain string when text-only, parts array when attachments present.
-    let userContent: string | ContentPart[];
-    if (attachments.length === 0) {
-      userContent = text;
-    } else {
-      const parts: ContentPart[] = [];
-      if (text) parts.push({ type: "text", text });
-      for (const att of attachments) {
-        if (att.mediaType === "image") {
-          parts.push({ type: "image_url", image_url: { url: att.data } });
-        } else {
-          parts.push({ type: "input_audio", input_audio: { data: att.data, format: att.format ?? "mp3" } });
-        }
-      }
-      userContent = parts;
-    }
+    const userContent: string | ContentPart[] = attachments.length === 0
+      ? text
+      : [
+          ...(text ? [{ type: "text" as const, text }] : []),
+          ...attachments.map((att): ContentPart =>
+            att.mediaType === "image"
+              ? { type: "image_url", image_url: { url: att.data } }
+              : { type: "input_audio", input_audio: { data: att.data, format: att.format ?? "mp3" } }
+          ),
+        ];
     setAttachments([]);
 
     const next: Message[] = [...messages, { role: "user", content: userContent }];
-    setMessages(next);
+    const convId = activeConvId ?? conversationStore.newId();
+    setActiveConvId(convId);
+    const [provider] = activeModel.split("/");
+    const now = Date.now();
+    const convoBase: Conversation = activeConv ?? { id: convId, title: "", provider, model: activeModel, messages: [], createdAt: now, updatedAt: now };
+    conversationStore.upsert({ ...convoBase, messages: next as never });
+    setConversations(conversationStore.list());
 
     const assistantIdx = next.length;
-    setMessages([...next, { role: "assistant", content: "" }]);
-    setStreaming(true);
+    let latestMessages: Message[] = [...next, { role: "assistant", content: "" }];
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    setStreaming(true);
 
     try {
       const res = await fetch(`${PROXY_BASE}/v1/chat/completions`, {
@@ -284,15 +342,17 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
             const chunk = JSON.parse(payload);
             const delta: string = chunk.choices?.[0]?.delta?.content ?? "";
             if (delta) {
-              setMessages((prev) => {
-                const copy = [...prev];
-                const cur = copy[assistantIdx];
-                copy[assistantIdx] = {
-                  role: "assistant",
-                  content: typeof cur.content === "string" ? cur.content + delta : delta,
-                };
-                return copy;
-              });
+              latestMessages = latestMessages.map((m, i) =>
+                i === assistantIdx
+                  ? { ...m, content: (m.content as string) + delta }
+                  : m
+              );
+              const now = Date.now();
+              if (now - lastSaveRef.current >= 500) {
+                conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
+                setConversations(conversationStore.list());
+                lastSaveRef.current = now;
+              }
             }
           } catch {
             // non-JSON line, ignore
@@ -301,20 +361,30 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       }
     } catch (e: unknown) {
       if ((e as { name?: string }).name === "AbortError") {
+        const last = latestMessages[latestMessages.length - 1];
+        if (last?.role === "assistant" && last.content) {
+          conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
+          setConversations(conversationStore.list());
+        }
         return;
       } else {
         setError(String(e));
-        setMessages((prev) => prev.slice(0, -1));
+        const trimmed = latestMessages.slice(0, -1);
+        conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as never });
+        setConversations(conversationStore.list());
       }
     } finally {
       setStreaming(false);
       abortRef.current = null;
     }
-    setMessages((prev) => {
-      const last = prev[prev.length - 1];
-      if (last?.role === "assistant" && !last.content) return prev.slice(0, -1);
-      return prev;
-    });
+    const last = latestMessages[latestMessages.length - 1];
+    if (last?.role === "assistant" && !last.content) {
+      const trimmed = latestMessages.slice(0, -1);
+      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as never });
+    } else {
+      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
+    }
+    setConversations(conversationStore.list());
   };
 
   if (!proxyOnline) {
@@ -326,188 +396,232 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   }
 
   const modelsForProvider = selectedProvider ? (modelsByProvider[selectedProvider] ?? []) : [];
-  const canSend = (input.trim().length > 0 || attachments.length > 0) && !!activeModel;
+  const currentMessages = activeConvId ? (conversationStore.get(activeConvId)?.messages ?? []) as Message[] : [];
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Model selector bar */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-100 bg-gray-50 flex-wrap">
-        {/* Provider select */}
-        <select
-          className="text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
-          value={selectedProvider}
-          onChange={(e) => handleProviderChange(e.target.value)}
-          disabled={loadingModels}
-        >
-          {configuredProviders.length === 0 && (
-            <option value="" disabled>No providers configured</option>
-          )}
-          {configuredProviders.map((p) => (
-            <option key={p} value={p}>{PROVIDER_LABELS[p] ?? p}</option>
-          ))}
-        </select>
-
-        {/* Model select or custom input */}
-        {useCustom ? (
-          <input
-            className="flex-1 min-w-[200px] text-sm border border-gray-200 rounded px-2 py-1 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
-            placeholder="provider/model-id"
-            value={customModel}
-            onChange={(e) => setCustomModel(e.target.value)}
-          />
-        ) : selectedProvider && modelErrors[selectedProvider] && !loadingModels ? (
-          <div className="flex-1 min-w-[200px] text-xs text-red-500 px-2 py-1 border border-red-200 rounded bg-red-50 truncate" title={modelErrors[selectedProvider]}>
-            {modelErrors[selectedProvider]}
+    <div className="flex h-full">
+      {/* History sidebar */}
+      {showHistory && (
+        <div className="w-56 flex-shrink-0 border-r border-gray-100 bg-gray-50 flex flex-col">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100">
+            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">History</span>
+            <button onClick={newConversation} className="text-xs text-blue-500 hover:text-blue-700">+ New</button>
           </div>
-        ) : (
-          <select
-            className="flex-1 min-w-[200px] text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            disabled={loadingModels || modelsForProvider.length === 0}
-          >
-            {loadingModels && <option value="" disabled>Loading…</option>}
-            {!loadingModels && modelsForProvider.length === 0 && (
-              <option value="" disabled>No models found</option>
+          <div className="flex-1 overflow-y-auto">
+            {conversations.length === 0 && (
+              <p className="text-xs text-gray-400 text-center mt-8 px-3">No saved conversations</p>
             )}
-            {modelsForProvider.map((id) => (
-              <option key={id} value={id}>{id}</option>
-            ))}
-          </select>
-        )}
-
-        {/* Custom toggle */}
-        <button
-          onClick={() => {
-            const next = !useCustom;
-            setUseCustom(next);
-            if (next) setCustomModel(activeModel || `${selectedProvider}/`);
-          }}
-          className="text-xs text-gray-400 hover:text-gray-600 whitespace-nowrap"
-        >
-          {useCustom ? "← presets" : "custom →"}
-        </button>
-
-        {messages.length > 0 && (
-          <button
-            onClick={() => { abortRef.current?.abort(); setMessages([]); setAttachments([]); setError(null); }}
-            className="text-xs text-gray-400 hover:text-red-500 whitespace-nowrap"
-          >
-            clear
-          </button>
-        )}
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        {messages.length === 0 && (
-          <p className="text-center text-gray-300 text-sm mt-16">
-            Send a message to start chatting
-          </p>
-        )}
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-          >
-            <div
-              className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
-                msg.role === "user"
-                  ? "bg-blue-500 text-white rounded-br-sm"
-                  : "bg-gray-100 text-gray-800 rounded-bl-sm"
-              }`}
-            >
-              {renderMessageContent(msg.content, streaming, i === messages.length - 1)}
-            </div>
-          </div>
-        ))}
-        {error && (
-          <div className="text-xs text-red-500 text-center py-1">{error}</div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Attachment previews */}
-      {attachments.length > 0 && (
-        <div className="px-4 pt-2 flex flex-wrap gap-2 border-t border-gray-100">
-          {attachments.map((att) => (
-            <div key={att.id} className="relative group flex-shrink-0">
-              {att.mediaType === "image" ? (
-                <img
-                  src={att.data}
-                  alt={att.name}
-                  className="w-14 h-14 object-cover rounded-lg border border-gray-200"
-                />
-              ) : (
-                <div className="w-14 h-14 flex flex-col items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-gray-500 text-xs px-1 text-center overflow-hidden">
-                  <span className="text-lg leading-none">♫</span>
-                  <span className="mt-0.5 truncate w-full text-center">{att.name.split(".").pop()}</span>
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => removeAttachment(att.id)}
-                className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-gray-600 text-white text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                aria-label={`Remove ${att.name}`}
+            {conversations.map((c) => (
+              <div
+                key={c.id}
+                className={`group flex items-start justify-between px-3 py-2 cursor-pointer border-b border-gray-100 hover:bg-white ${
+                  c.id === activeConvId ? "bg-white" : ""
+                }`}
+                onClick={() => loadConversation(c.id)}
               >
-                ✕
-              </button>
-            </div>
-          ))}
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-gray-700 truncate">{c.title || "New conversation"}</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">{c.model || c.provider}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); deleteConversation(c.id); }}
+                  className="ml-1 opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 text-xs leading-none flex-shrink-0"
+                  aria-label="Delete conversation"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* Input */}
-      <div className="px-4 py-3 border-t border-gray-100 flex gap-2 items-end">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept={ACCEPTED_TYPES}
-          multiple
-          className="hidden"
-          onChange={handleFileChange}
-        />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="flex-shrink-0 p-2 rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-          title="Attach image or audio"
-          aria-label="Attach file"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-            <path fillRule="evenodd" d="M15.621 4.379a3 3 0 0 0-4.242 0l-7 7a1.5 1.5 0 0 0 2.122 2.121l7-7a1.5 1.5 0 0 0-2.121-2.121l-7 7a3 3 0 1 0 4.243 4.243l7-7a4.5 4.5 0 0 0-6.364-6.364l-7 7a6 6 0 0 0 8.485 8.486l7-7a1.5 1.5 0 0 0-2.122-2.122l-7 7a3 3 0 0 1-4.243-4.243l7-7a1.5 1.5 0 1 1 2.122 2.122l-7 7" clipRule="evenodd" />
-          </svg>
-        </button>
-        <textarea
-          rows={1}
-          className="flex-1 text-sm border border-gray-200 rounded-xl px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-blue-300 leading-relaxed"
-          placeholder="Message…"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          style={{ maxHeight: 120, overflowY: "auto" }}
-        />
-        {streaming ? (
+      <div className="flex flex-col flex-1 min-w-0">
+        {/* Model selector bar */}
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-100 bg-gray-50 flex-wrap">
           <button
-            onClick={() => abortRef.current?.abort()}
-            className="px-4 py-2 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200"
+            type="button"
+            onClick={() => setShowHistory((v) => !v)}
+            className={`text-xs px-2 py-1 rounded border whitespace-nowrap ${showHistory ? "border-blue-300 text-blue-600 bg-blue-50" : "border-gray-200 text-gray-400 hover:text-gray-600"}`}
+            aria-label="Toggle conversation history"
           >
-            Stop
+            ☰
           </button>
-        ) : (
+
+          <select
+            className="text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
+            value={selectedProvider}
+            onChange={(e) => handleProviderChange(e.target.value)}
+            disabled={loadingModels}
+          >
+            {configuredProviders.length === 0 && (
+              <option value="" disabled>No providers configured</option>
+            )}
+            {configuredProviders.map((p) => (
+              <option key={p} value={p}>{PROVIDER_LABELS[p] ?? p}</option>
+            ))}
+          </select>
+
+          {useCustom ? (
+            <input
+              className="flex-1 min-w-[200px] text-sm border border-gray-200 rounded px-2 py-1 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+              placeholder="provider/model-id"
+              value={customModel}
+              onChange={(e) => setCustomModel(e.target.value)}
+            />
+          ) : selectedProvider && modelErrors[selectedProvider] && !loadingModels ? (
+            <div className="flex-1 min-w-[200px] text-xs text-red-500 px-2 py-1 border border-red-200 rounded bg-red-50 truncate" title={modelErrors[selectedProvider]}>
+              {modelErrors[selectedProvider]}
+            </div>
+          ) : (
+            <select
+              className="flex-1 min-w-[200px] text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              disabled={loadingModels || modelsForProvider.length === 0}
+            >
+              {loadingModels && <option value="" disabled>Loading…</option>}
+              {!loadingModels && modelsForProvider.length === 0 && (
+                <option value="" disabled>No models found</option>
+              )}
+              {modelsForProvider.map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+          )}
+
           <button
-            onClick={send}
-            disabled={!canSend}
-            className="px-4 py-2 rounded-xl text-sm font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={() => {
+              const next = !useCustom;
+              setUseCustom(next);
+              if (next) setCustomModel(activeModel || `${selectedProvider}/`);
+            }}
+            className="text-xs text-gray-400 hover:text-gray-600 whitespace-nowrap"
           >
-            Send
+            {useCustom ? "← presets" : "custom →"}
           </button>
+
+          {currentMessages.length > 0 && (
+            <button
+              onClick={newConversation}
+              className="text-xs text-gray-400 hover:text-red-500 whitespace-nowrap"
+            >
+              clear
+            </button>
+          )}
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          {currentMessages.length === 0 && (
+            <p className="text-center text-gray-300 text-sm mt-16">
+              Send a message to start chatting
+            </p>
+          )}
+          {currentMessages.map((msg, i) => (
+            <div
+              key={i}
+              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            >
+              <div
+                className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
+                  msg.role === "user"
+                    ? "bg-blue-500 text-white rounded-br-sm"
+                    : "bg-gray-100 text-gray-800 rounded-bl-sm"
+                }`}
+              >
+                {renderMessageContent(msg.content, streaming, i === currentMessages.length - 1)}
+              </div>
+            </div>
+          ))}
+          {error && (
+            <div className="text-xs text-red-500 text-center py-1">{error}</div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Attachment previews */}
+        {attachments.length > 0 && (
+          <div className="px-4 pt-2 flex flex-wrap gap-2 border-t border-gray-100">
+            {attachments.map((att) => (
+              <div key={att.id} className="relative group flex-shrink-0">
+                {att.mediaType === "image" ? (
+                  <img
+                    src={att.data}
+                    alt={att.name}
+                    className="w-14 h-14 object-cover rounded-lg border border-gray-200"
+                  />
+                ) : (
+                  <div className="w-14 h-14 flex flex-col items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-gray-500 text-xs px-1 text-center overflow-hidden">
+                    <span className="text-lg leading-none">♫</span>
+                    <span className="mt-0.5 truncate w-full text-center">{att.name.split(".").pop()}</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(att.id)}
+                  className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-gray-600 text-white text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  aria-label={`Remove ${att.name}`}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
         )}
+
+        {/* Input */}
+        <div className="px-4 py-3 border-t border-gray-100 flex gap-2 items-end">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_TYPES}
+            multiple
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex-shrink-0 p-2 rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            aria-label="Attach file"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+              <path fillRule="evenodd" d="M15.621 4.379a3 3 0 0 0-4.242 0l-7 7a1.5 1.5 0 0 0 2.122 2.121l7-7a1.5 1.5 0 0 0-2.121-2.121l-7 7a3 3 0 1 0 4.243 4.243l7-7a4.5 4.5 0 0 0-6.364-6.364l-7 7a6 6 0 0 0 8.485 8.486l7-7a1.5 1.5 0 0 0-2.122-2.122l-7 7a3 3 0 0 1-4.243-4.243l7-7a1.5 1.5 0 1 1 2.122 2.122l-7 7" clipRule="evenodd" />
+            </svg>
+          </button>
+          <textarea
+            rows={1}
+            className="flex-1 text-sm border border-gray-200 rounded-xl px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-blue-300 leading-relaxed"
+            placeholder="Message…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            style={{ maxHeight: 120, overflowY: "auto" }}
+          />
+          {streaming ? (
+            <button
+              onClick={() => abortRef.current?.abort()}
+              className="px-4 py-2 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={send}
+              disabled={!canSend}
+              className="px-4 py-2 rounded-xl text-sm font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Send
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
