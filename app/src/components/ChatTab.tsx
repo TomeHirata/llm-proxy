@@ -78,13 +78,20 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       setModelErrors(errs);
       setLoadingModels(false);
 
-      // Auto-select first model for the current provider (or first provider with models)
+      // Auto-select first model for the current provider (or first provider with models).
+      // Preserve the current selection if it's still valid — the effect re-runs on
+      // every status poll even when providers haven't changed.
       setSelectedProvider((currentProvider) => {
         const target =
           (map[currentProvider]?.length ? currentProvider : null) ??
           configuredProviders.find((p) => map[p]?.length) ??
           currentProvider;
-        setSelectedModel(map[target]?.[0] ?? "");
+        setSelectedModel((currentModel) => {
+          if (target === currentProvider && map[target]?.includes(currentModel)) {
+            return currentModel;
+          }
+          return map[target]?.[0] ?? "";
+        });
         return target;
       });
     });
