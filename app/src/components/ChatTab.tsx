@@ -51,6 +51,9 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   useEffect(() => {
     if (!proxyOnline || configuredProviders.length === 0) return;
 
+    // Immediately fix the provider select so it's never blank while loading
+    setSelectedProvider((prev) => prev || configuredProviders[0]);
+
     setLoadingModels(true);
     Promise.all(
       configuredProviders.map(async (p) => {
@@ -69,32 +72,23 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       setModelsByProvider(map);
       setLoadingModels(false);
 
-      // Auto-select first provider + model
-      for (const p of configuredProviders) {
-        if (map[p]?.length) {
-          setSelectedProvider(p);
-          setSelectedModel(map[p][0]);
-          return;
-        }
-      }
-      // No live models available — drop into custom mode
-      if (configuredProviders.length > 0) {
-        setUseCustom(true);
-        setSelectedProvider(configuredProviders[0]);
-        setCustomModel(`${configuredProviders[0]}/`);
-      }
+      // Auto-select first model for the current provider (or first provider with models)
+      setSelectedProvider((currentProvider) => {
+        const target =
+          (map[currentProvider]?.length ? currentProvider : null) ??
+          configuredProviders.find((p) => map[p]?.length) ??
+          currentProvider;
+        setSelectedModel(map[target]?.[0] ?? "");
+        return target;
+      });
     });
   }, [proxyOnline, configuredProviders]);
 
   // When provider changes, reset model to first in list
   const handleProviderChange = (p: string) => {
     setSelectedProvider(p);
-    const first = modelsByProvider[p]?.[0] ?? "";
-    setSelectedModel(first);
-    if (!first && !useCustom) {
-      setUseCustom(true);
-      setCustomModel(`${p}/`);
-    }
+    setSelectedModel(modelsByProvider[p]?.[0] ?? "");
+    // Never auto-switch to custom — user does that explicitly
   };
 
   useEffect(() => {
