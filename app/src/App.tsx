@@ -4,8 +4,9 @@ import { api, type ProxyStatus } from "./api";
 import UsageTab from "./components/UsageTab";
 import ProvidersTab from "./components/ProvidersTab";
 import SettingsTab from "./components/SettingsTab";
+import ChatTab from "./components/ChatTab";
 
-type Tab = "usage" | "providers" | "settings";
+type Tab = "usage" | "providers" | "settings" | "chat";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("usage");
@@ -47,6 +48,7 @@ export default function App() {
   const tabs: { key: Tab; label: string }[] = [
     { key: "usage", label: "Usage" },
     { key: "providers", label: "Providers" },
+    { key: "chat", label: "Chat" },
     { key: "settings", label: "Settings" },
   ];
 
@@ -117,6 +119,7 @@ export default function App() {
         {tab === "providers" && (
           <ProvidersTab proxyOnline={proxyOnline} />
         )}
+        {tab === "chat" && <ChatTab proxyOnline={proxyOnline} />}
         {tab === "settings" && <SettingsTab status={status} />}
       </main>
     </div>
