@@ -17,9 +17,10 @@ const ALL_PROVIDERS = [
 
 interface Props {
   proxyOnline: boolean;
+  configuredProviders: string[];
 }
 
-export default function ProvidersTab({ proxyOnline }: Props) {
+export default function ProvidersTab({ proxyOnline, configuredProviders }: Props) {
   const [cfg, setCfg] = useState<Config | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -90,7 +91,7 @@ export default function ProvidersTab({ proxyOnline }: Props) {
       )}
 
       {ALL_PROVIDERS.map(({ name, label, fields }) => {
-        const configured = !!cfg?.providers[name];
+        const configured = configuredProviders.includes(name);
         const isEditing = editing === name;
 
         return (

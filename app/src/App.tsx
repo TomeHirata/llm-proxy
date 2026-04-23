@@ -117,9 +117,17 @@ export default function App() {
       <main className="flex-1 overflow-auto">
         {tab === "usage" && <UsageTab proxyOnline={proxyOnline} />}
         {tab === "providers" && (
-          <ProvidersTab proxyOnline={proxyOnline} />
+          <ProvidersTab
+            proxyOnline={proxyOnline}
+            configuredProviders={status?.configured_providers ?? []}
+          />
         )}
-        {tab === "chat" && <ChatTab proxyOnline={proxyOnline} />}
+        {tab === "chat" && (
+          <ChatTab
+            proxyOnline={proxyOnline}
+            configuredProviders={status?.configured_providers ?? []}
+          />
+        )}
         {tab === "settings" && <SettingsTab status={status} />}
       </main>
     </div>

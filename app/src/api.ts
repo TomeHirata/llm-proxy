@@ -24,6 +24,7 @@ export interface ProxyStatus {
   version: string;
   uptime_secs: number;
   usage_log_enabled: boolean;
+  configured_providers: string[];
 }
 
 export interface SummaryTotals {

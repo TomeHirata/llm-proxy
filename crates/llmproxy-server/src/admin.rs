@@ -35,11 +35,19 @@ pub fn admin_routes() -> Router<AppState> {
 
 async fn status_handler(State(s): State<AppState>) -> impl IntoResponse {
     let uptime = (chrono::Utc::now() - s.started_at).num_seconds().max(0);
+    let configured: Vec<String> = s
+        .registry
+        .configured_names()
+        .into_iter()
+        .filter(|(_, ok)| *ok)
+        .map(|(name, _)| name)
+        .collect();
     Json(json!({
         "running": true,
         "version": s.version,
         "uptime_secs": uptime,
         "usage_log_enabled": s.usage_store.is_some(),
+        "configured_providers": configured,
     }))
 }
 

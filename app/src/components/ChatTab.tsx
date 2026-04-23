@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-const PROXY = "http://127.0.0.1:8080";
+const PROXY_BASE = "http://127.0.0.1:8080";
 
 const PRESET_MODELS: Record<string, string[]> = {
   anthropic: [
@@ -40,9 +40,10 @@ interface Message {
 
 interface Props {
   proxyOnline: boolean;
+  configuredProviders: string[];
 }
 
-export default function ChatTab({ proxyOnline }: Props) {
+export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const [providers, setProviders] = useState<string[]>([]);
   const [model, setModel] = useState("");
   const [customModel, setCustomModel] = useState("");
@@ -55,28 +56,20 @@ export default function ChatTab({ proxyOnline }: Props) {
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (!proxyOnline) return;
-    fetch(`${PROXY}/v1/models`)
-      .then((r) => r.json())
-      .then((j) => {
-        const ids: string[] = j.data?.map((m: { id: string }) => m.id) ?? [];
-        setProviders(ids);
-        // Pick first preset model from first provider
-        for (const id of ids) {
-          const presets = PRESET_MODELS[id];
-          if (presets?.length) {
-            setModel(presets[0]);
-            return;
-          }
-        }
-        // Azure or unknown — fall back to custom
-        if (ids.length > 0) {
-          setUseCustom(true);
-          setCustomModel(`${ids[0]}/`);
-        }
-      })
-      .catch(() => {});
-  }, [proxyOnline]);
+    if (!proxyOnline || configuredProviders.length === 0) return;
+    setProviders(configuredProviders);
+    // Pick first preset model from first configured provider
+    for (const id of configuredProviders) {
+      const presets = PRESET_MODELS[id];
+      if (presets?.length) {
+        setModel(presets[0]);
+        return;
+      }
+    }
+    // No presets (e.g. azure-only) — fall back to custom
+    setUseCustom(true);
+    setCustomModel(`${configuredProviders[0]}/`);
+  }, [proxyOnline, configuredProviders]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -101,7 +94,7 @@ export default function ChatTab({ proxyOnline }: Props) {
     abortRef.current = ctrl;
 
     try {
-      const res = await fetch(`${PROXY}/v1/chat/completions`, {
+      const res = await fetch(`${PROXY_BASE}/v1/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: activeModel, messages: next, stream: true }),
@@ -194,6 +187,9 @@ export default function ChatTab({ proxyOnline }: Props) {
             value={model}
             onChange={(e) => setModel(e.target.value)}
           >
+            {providers.length === 0 && (
+              <option value="" disabled>Loading models…</option>
+            )}
             {providers.flatMap((p) =>
               (PRESET_MODELS[p] ?? []).map((m) => (
                 <option key={m} value={m}>{m}</option>

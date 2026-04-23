@@ -125,9 +125,10 @@ fn llmproxy_bin() -> std::path::PathBuf {
 }
 
 async fn do_start_proxy(_app: &tauri::AppHandle) -> Result<String, String> {
-    let out = std::process::Command::new(llmproxy_bin())
+    let out = tokio::process::Command::new(llmproxy_bin())
         .args(["serve", "--daemon"])
         .output()
+        .await
         .map_err(|e| format!("failed to run llmproxy: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -152,9 +153,10 @@ async fn stop_proxy(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 async fn do_stop_proxy(_app: &tauri::AppHandle) -> Result<String, String> {
-    let out = std::process::Command::new(llmproxy_bin())
+    let out = tokio::process::Command::new(llmproxy_bin())
         .arg("stop")
         .output()
+        .await
         .map_err(|e| format!("failed to run llmproxy: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
