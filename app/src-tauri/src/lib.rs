@@ -15,14 +15,17 @@ pub fn run() {
 
             build_tray(app)?;
 
-            // Show the dashboard immediately on first launch.
+            // Build hidden first so the tray registers before the window appears.
             let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("llmproxy")
                 .inner_size(920.0, 640.0)
                 .min_inner_size(700.0, 480.0)
                 .center()
-                .visible(true)
+                .visible(false)
                 .build()?;
+
+            // Show immediately — tray is already registered at this point.
+            let _ = win.show();
 
             // macOS: clicking the red close button hides rather than destroys.
             #[cfg(target_os = "macos")]
