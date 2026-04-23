@@ -14,6 +14,55 @@ use serde_json::{json, Value};
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Parse `data:<mime>;base64,<data>` → `(mime, data)`.
+fn parse_data_url(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    let mime = meta.strip_suffix(";base64")?;
+    Some((mime, data))
+}
+
+/// Convert a `MessageContent` to the Anthropic `content` field value.
+/// Text stays as a plain string; Parts are translated to Anthropic content blocks.
+/// `image_url` data-URL parts become base64 image blocks; audio is not yet supported
+/// and is silently dropped.
+fn content_to_anthropic(content: &MessageContent) -> Value {
+    match content {
+        MessageContent::Text(s) => json!(s),
+        MessageContent::Parts(parts) => {
+            let blocks: Vec<Value> = parts
+                .iter()
+                .filter_map(|p| match p.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => {
+                        let text = p.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        Some(json!({"type": "text", "text": text}))
+                    }
+                    Some("image_url") => {
+                        let url = p.get("image_url")?.get("url")?.as_str()?;
+                        if let Some((mime, data)) = parse_data_url(url) {
+                            Some(json!({
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": mime, "data": data},
+                            }))
+                        } else {
+                            Some(json!({
+                                "type": "image",
+                                "source": {"type": "url", "url": url},
+                            }))
+                        }
+                    }
+                    _ => None,
+                })
+                .collect();
+            if blocks.is_empty() {
+                json!("")
+            } else {
+                json!(blocks)
+            }
+        }
+    }
+}
+
 pub struct AnthropicProvider {
     client: reqwest::Client,
 }
@@ -57,7 +106,7 @@ impl AnthropicProvider {
             .map(|m| {
                 json!({
                     "role": m.role,
-                    "content": m.content.as_text(),
+                    "content": content_to_anthropic(&m.content),
                 })
             })
             .collect();
@@ -343,6 +392,38 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"], "hi");
         assert!(body.get("stream").is_none());
+    }
+
+    #[test]
+    fn content_to_anthropic_text_part() {
+        let c = MessageContent::Parts(vec![
+            serde_json::json!({"type": "text", "text": "hello"}),
+        ]);
+        let v = content_to_anthropic(&c);
+        assert_eq!(v[0]["type"], "text");
+        assert_eq!(v[0]["text"], "hello");
+    }
+
+    #[test]
+    fn content_to_anthropic_image_data_url() {
+        let c = MessageContent::Parts(vec![
+            serde_json::json!({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc123"}}),
+        ]);
+        let v = content_to_anthropic(&c);
+        assert_eq!(v[0]["type"], "image");
+        assert_eq!(v[0]["source"]["type"], "base64");
+        assert_eq!(v[0]["source"]["media_type"], "image/jpeg");
+        assert_eq!(v[0]["source"]["data"], "abc123");
+    }
+
+    #[test]
+    fn content_to_anthropic_skips_audio() {
+        let c = MessageContent::Parts(vec![
+            serde_json::json!({"type": "input_audio", "input_audio": {"data": "xyz", "format": "mp3"}}),
+        ]);
+        let v = content_to_anthropic(&c);
+        // Audio is not supported; empty array → empty string fallback
+        assert_eq!(v, "");
     }
 
     #[test]

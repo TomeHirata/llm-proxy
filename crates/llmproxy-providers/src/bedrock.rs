@@ -1,5 +1,42 @@
 use std::time::{Duration, SystemTime};
 
+fn parse_data_url(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    let mime = meta.strip_suffix(";base64")?;
+    Some((mime, data))
+}
+
+/// Convert a `MessageContent` to an array of Bedrock Converse content blocks.
+/// Supports text and images; audio is not yet supported and is silently dropped.
+fn content_to_converse_parts(content: &MessageContent) -> Vec<Value> {
+    match content {
+        MessageContent::Text(s) => vec![json!({"text": s})],
+        MessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|p| match p.get("type").and_then(|t| t.as_str()) {
+                Some("text") => {
+                    let text = p.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    Some(json!({"text": text}))
+                }
+                Some("image_url") => {
+                    let url = p.get("image_url")?.get("url")?.as_str()?;
+                    let (mime, data) = parse_data_url(url)?;
+                    let format = match mime.split('/').nth(1).unwrap_or("jpeg") {
+                        "jpeg" | "jpg" => "jpeg",
+                        "png" => "png",
+                        "gif" => "gif",
+                        "webp" => "webp",
+                        _ => "jpeg",
+                    };
+                    Some(json!({"image": {"format": format, "source": {"bytes": data}}}))
+                }
+                _ => None,
+            })
+            .collect(),
+    }
+}
+
 use async_stream::try_stream;
 use async_trait::async_trait;
 use aws_credential_types::Credentials;
@@ -65,7 +102,7 @@ impl BedrockProvider {
             .map(|m| {
                 json!({
                     "role": m.role,
-                    "content": [{ "text": m.content.as_text() }],
+                    "content": content_to_converse_parts(&m.content),
                 })
             })
             .collect();
@@ -512,6 +549,16 @@ mod tests {
             response_format: None,
             extra: Default::default(),
         }
+    }
+
+    #[test]
+    fn content_to_converse_parts_image() {
+        let c = MessageContent::Parts(vec![
+            serde_json::json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}),
+        ]);
+        let parts = content_to_converse_parts(&c);
+        assert_eq!(parts[0]["image"]["format"], "png");
+        assert_eq!(parts[0]["image"]["source"]["bytes"], "abc");
     }
 
     #[test]
