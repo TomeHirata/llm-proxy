@@ -16,6 +16,50 @@ use llmproxy_core::{
 };
 use serde_json::{json, Value};
 
+/// Convert a `MessageContent` to Bedrock Converse content blocks.
+/// Supports text and data-URL images; audio is not supported.
+/// Returns `Err(ProxyError::NotImplemented)` when a non-empty `Parts` input
+/// produces no translatable blocks, so callers never send `content: []`.
+fn content_to_converse_parts(content: &MessageContent) -> Result<Vec<Value>, ProxyError> {
+    match content {
+        MessageContent::Text(s) => Ok(vec![json!({"text": s})]),
+        MessageContent::Parts(parts) => {
+            let translated: Vec<Value> = parts
+                .iter()
+                .filter_map(|p| match p.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => {
+                        let text = p.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        Some(json!({"text": text}))
+                    }
+                    Some("image_url") => {
+                        let url = p.get("image_url")?.get("url")?.as_str()?;
+                        let (mime, data) = crate::util::parse_data_url(url)?;
+                        let format = match mime.split('/').nth(1).unwrap_or("jpeg") {
+                            "jpeg" | "jpg" => "jpeg",
+                            "png" => "png",
+                            "gif" => "gif",
+                            "webp" => "webp",
+                            _ => "jpeg",
+                        };
+                        Some(json!({"image": {"format": format, "source": {"bytes": data}}}))
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            if !parts.is_empty() && translated.is_empty() {
+                return Err(ProxyError::NotImplemented(
+                    "Bedrock Converse only supports text and image_url (data URL) parts; \
+                     audio and other media types are not yet supported"
+                        .into(),
+                ));
+            }
+
+            Ok(translated)
+        }
+    }
+}
+
 pub struct BedrockProvider {
     client: reqwest::Client,
 }
@@ -50,7 +94,7 @@ impl BedrockProvider {
         )
     }
 
-    pub(crate) fn to_converse_body(req: &ChatRequest) -> Value {
+    pub(crate) fn to_converse_body(req: &ChatRequest) -> Result<Value, ProxyError> {
         let system: Vec<Value> = req
             .messages
             .iter()
@@ -58,17 +102,13 @@ impl BedrockProvider {
             .map(|m| json!({ "text": m.content.as_text() }))
             .collect();
 
-        let messages: Vec<Value> = req
-            .messages
-            .iter()
-            .filter(|m| m.role != "system")
-            .map(|m| {
-                json!({
-                    "role": m.role,
-                    "content": [{ "text": m.content.as_text() }],
-                })
-            })
-            .collect();
+        let mut messages: Vec<Value> = Vec::new();
+        for m in req.messages.iter().filter(|m| m.role != "system") {
+            messages.push(json!({
+                "role": m.role,
+                "content": content_to_converse_parts(&m.content)?,
+            }));
+        }
 
         let mut body = json!({ "messages": messages });
         if !system.is_empty() {
@@ -94,7 +134,7 @@ impl BedrockProvider {
         if !ic.is_empty() {
             body["inferenceConfig"] = Value::Object(ic);
         }
-        body
+        Ok(body)
     }
 
     pub(crate) fn from_converse(resp: Value, model_id: &str) -> ChatResponse {
@@ -394,7 +434,7 @@ impl Provider for BedrockProvider {
         };
 
         let url = Self::url(&region, model_id);
-        let body = serde_json::to_vec(&Self::to_converse_body(&req))?;
+        let body = serde_json::to_vec(&Self::to_converse_body(&req)?)?;
         let request = self.signed_request(&url, body, cred)?;
         let resp = self.client.execute(request).await?;
 
@@ -424,7 +464,7 @@ impl Provider for BedrockProvider {
         };
 
         let url = Self::stream_url(&region, model_id);
-        let body = serde_json::to_vec(&Self::to_converse_body(&req))?;
+        let body = serde_json::to_vec(&Self::to_converse_body(&req)?)?;
         let mut request = self.signed_request(&url, body, cred)?;
         // Accept header for binary event stream (not part of the signed canonical request)
         request.headers_mut().insert(
@@ -516,12 +556,33 @@ mod tests {
 
     #[test]
     fn converse_body_shape() {
-        let body = BedrockProvider::to_converse_body(&req());
+        let body = BedrockProvider::to_converse_body(&req()).unwrap();
         assert_eq!(body["system"][0]["text"], "be helpful");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"][0]["text"], "hi");
         assert_eq!(body["inferenceConfig"]["maxTokens"], 128);
         assert_eq!(body["inferenceConfig"]["temperature"], 0.5);
+    }
+
+    #[test]
+    fn content_to_converse_parts_image() {
+        let c = MessageContent::Parts(vec![
+            serde_json::json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}),
+        ]);
+        let parts = content_to_converse_parts(&c).unwrap();
+        assert_eq!(parts[0]["image"]["format"], "png");
+        assert_eq!(parts[0]["image"]["source"]["bytes"], "abc");
+    }
+
+    #[test]
+    fn content_to_converse_parts_unsupported_returns_err() {
+        let c = MessageContent::Parts(vec![
+            serde_json::json!({"type": "input_audio", "input_audio": {"data": "xyz", "format": "mp3"}}),
+        ]);
+        assert!(matches!(
+            content_to_converse_parts(&c),
+            Err(ProxyError::NotImplemented(_))
+        ));
     }
 
     #[test]
