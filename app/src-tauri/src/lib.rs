@@ -16,17 +16,13 @@ pub fn run() {
             build_tray(app)?;
 
             // Pre-create the main window (hidden). It will be shown on tray click.
-            let win = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::App("index.html".into()),
-            )
-            .title("llmproxy")
-            .inner_size(920.0, 640.0)
-            .min_inner_size(700.0, 480.0)
-            .center()
-            .visible(false)
-            .build()?;
+            let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("llmproxy")
+                .inner_size(920.0, 640.0)
+                .min_inner_size(700.0, 480.0)
+                .center()
+                .visible(false)
+                .build()?;
 
             // macOS: clicking the red close button hides rather than destroys.
             #[cfg(target_os = "macos")]

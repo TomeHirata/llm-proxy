@@ -14,11 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::{
-    config::redacted,
-    server::AppState,
-    usage_log::parse_since,
-};
+use crate::{config::redacted, server::AppState, usage_log::parse_since};
 
 /// Returns the admin sub-router (no state — it shares `AppState` with the
 /// main router via `.merge()`).
@@ -219,10 +215,7 @@ fn write_provider_to_config(
         AppConfig::default()
     };
 
-    let entry = cfg
-        .providers
-        .entry(provider.to_string())
-        .or_default();
+    let entry = cfg.providers.entry(provider.to_string()).or_default();
 
     if patch.api_key.is_some() {
         entry.api_key = patch.api_key;
