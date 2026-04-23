@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api, type UsageSummary, type UsageEntry } from "../api";
 
 const RANGES = [
@@ -175,9 +175,8 @@ export default function UsageTab({ proxyOnline }: Props) {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {recent.map((e) => (
-                  <>
+                  <Fragment key={e.id}>
                     <tr
-                      key={e.id}
                       className="hover:bg-gray-50 cursor-pointer"
                       onClick={() =>
                         setExpanded(expanded === e.id ? null : e.id)
@@ -218,7 +217,7 @@ export default function UsageTab({ proxyOnline }: Props) {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>

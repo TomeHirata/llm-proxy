@@ -35,6 +35,9 @@ pub fn run() {
                     if let Some(w) = handle.get_webview_window("main") {
                         let _ = w.hide();
                     }
+                    // Revert to Accessory so the dock icon disappears again.
+                    #[cfg(target_os = "macos")]
+                    let _ = handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             });
 

@@ -5,24 +5,37 @@
 /// that can reach it is already on the same machine.
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, put},
     Json, Router,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::{config::redacted, server::AppState, usage_log::parse_since};
 
 /// Returns the admin sub-router (no state — it shares `AppState` with the
 /// main router via `.merge()`).
 pub fn admin_routes() -> Router<AppState> {
+    // Allow only localhost origins — the admin API must not be reachable from
+    // arbitrary websites even when the server is bound to a non-loopback address.
+    let localhost_origins = AllowOrigin::predicate(|origin: &HeaderValue, _| {
+        origin
+            .to_str()
+            .map(|s| {
+                s.starts_with("http://localhost")
+                    || s.starts_with("http://127.0.0.1")
+                    || s.starts_with("tauri://localhost")
+                    || s == "null" // file:// / Tauri custom protocol
+            })
+            .unwrap_or(false)
+    });
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(localhost_origins)
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any);
 
     Router::new()
         .route("/admin/status", get(status_handler))

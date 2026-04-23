@@ -38,8 +38,11 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
 
   const startEdit = (name: string) => {
     const existing = cfg?.providers[name] ?? {};
+    // Treat the redacted sentinel "***" as empty — saving it would overwrite
+    // the real key in the config file with the literal string "***".
+    const apiKey = existing.api_key === "***" ? "" : (existing.api_key ?? "");
     setDraft({
-      api_key: existing.api_key ?? "",
+      api_key: apiKey,
       endpoint: existing.endpoint ?? "",
       api_version: existing.api_version ?? "",
       region: existing.region ?? "",

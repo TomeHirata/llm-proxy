@@ -73,7 +73,7 @@ export default function App() {
                 proxyOnline ? "bg-green-500" : "bg-red-400"
               }`}
             />
-            {proxyOnline ? `Running · :${status?.uptime_secs != null ? formatUptime(status.uptime_secs) : ""}` : "Stopped"}
+            {proxyOnline ? `Running · ${status?.uptime_secs != null ? formatUptime(status.uptime_secs) : ""}` : "Stopped"}
           </span>
           <button
             onClick={handleStartStop}
