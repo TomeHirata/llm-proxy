@@ -30,6 +30,7 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/admin/usage/recent", get(usage_recent_handler))
         .route("/admin/config", get(config_get_handler))
         .route("/admin/config/provider/:name", put(config_put_provider))
+        .route("/admin/models/:provider", get(provider_models_handler))
         .layer(cors)
 }
 
@@ -244,4 +245,182 @@ fn write_provider_to_config(
     std::fs::rename(&tmp, path)?;
 
     Ok(())
+}
+
+/// Fetch the live model list from an upstream provider using configured credentials.
+/// Returns `{"models": ["model-id", ...]}` with IDs suitable for use as
+/// `provider/model-id` in chat requests.
+async fn provider_models_handler(
+    State(s): State<AppState>,
+    Path(provider): Path<String>,
+) -> impl IntoResponse {
+    let cred = match s.registry.credential_for(&provider, None) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+
+    let token = match cred {
+        llmproxy_core::provider::Credential::BearerToken(t) => t,
+        llmproxy_core::provider::Credential::AwsSigV4 { .. } => {
+            return (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(json!({"error": "bedrock model listing not supported"})),
+            )
+                .into_response()
+        }
+    };
+
+    let models: Vec<String> = match provider.as_str() {
+        "openai" => fetch_openai_models(&s.http, &token).await,
+        "anthropic" => fetch_anthropic_models(&s.http, &token).await,
+        "gemini" => fetch_gemini_models(&s.http, &token).await,
+        "mistral" => {
+            fetch_openai_compat_models(&s.http, &token, "https://api.mistral.ai/v1/models").await
+        }
+        "togetherai" => {
+            fetch_openai_compat_models(&s.http, &token, "https://api.together.xyz/v1/models").await
+        }
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("model listing not supported for {provider}")})),
+            )
+                .into_response()
+        }
+    };
+
+    Json(json!({"models": models})).into_response()
+}
+
+async fn fetch_openai_models(client: &reqwest::Client, token: &str) -> Vec<String> {
+    let Ok(resp) = client
+        .get("https://api.openai.com/v1/models")
+        .bearer_auth(token)
+        .send()
+        .await
+    else {
+        return vec![];
+    };
+    let Ok(body) = resp.json::<Value>().await else {
+        return vec![];
+    };
+    let mut ids: Vec<String> = body["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["id"].as_str())
+                .filter(|id| is_chat_model_openai(id))
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids
+}
+
+fn is_chat_model_openai(id: &str) -> bool {
+    let keep = ["gpt-", "o1", "o3", "o4", "chatgpt"];
+    let drop = [
+        "instruct",
+        "embedding",
+        "whisper",
+        "tts",
+        "dall-e",
+        "davinci",
+        "babbage",
+        "text-",
+        "audio",
+        "image",
+        "search",
+        "similarity",
+        "code-",
+    ];
+    keep.iter().any(|p| id.starts_with(p)) && !drop.iter().any(|p| id.contains(p))
+}
+
+async fn fetch_anthropic_models(client: &reqwest::Client, token: &str) -> Vec<String> {
+    let Ok(resp) = client
+        .get("https://api.anthropic.com/v1/models")
+        .header("x-api-key", token)
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await
+    else {
+        return vec![];
+    };
+    let Ok(body) = resp.json::<Value>().await else {
+        return vec![];
+    };
+    let mut ids: Vec<String> = body["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["id"].as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort_by(|a, b| b.cmp(a)); // newest first
+    ids
+}
+
+async fn fetch_gemini_models(client: &reqwest::Client, token: &str) -> Vec<String> {
+    let mut url =
+        reqwest::Url::parse("https://generativelanguage.googleapis.com/v1beta/models").unwrap();
+    url.query_pairs_mut().append_pair("key", token);
+    let Ok(resp) = client.get(url).send().await else {
+        return vec![];
+    };
+    let Ok(body) = resp.json::<Value>().await else {
+        return vec![];
+    };
+    let mut ids = Vec::new();
+    if let Some(arr) = body["models"].as_array() {
+        for m in arr {
+            let supports_generate = m["supportedGenerationMethods"]
+                .as_array()
+                .map(|a| a.iter().any(|v| v.as_str() == Some("generateContent")))
+                .unwrap_or(false);
+            if !supports_generate {
+                continue;
+            }
+            if let Some(id) = m["name"].as_str().and_then(|n| n.strip_prefix("models/")) {
+                if !id.contains("embedding") && !id.contains("aqa") {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+    }
+    ids.sort();
+    ids
+}
+
+async fn fetch_openai_compat_models(
+    client: &reqwest::Client,
+    token: &str,
+    url: &str,
+) -> Vec<String> {
+    let Ok(resp) = client.get(url).bearer_auth(token).send().await else {
+        return vec![];
+    };
+    let Ok(body) = resp.json::<Value>().await else {
+        return vec![];
+    };
+    let mut ids: Vec<String> = body["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["id"].as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids
 }

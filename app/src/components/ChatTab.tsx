@@ -2,30 +2,8 @@ import { useEffect, useRef, useState } from "react";
 
 const PROXY_BASE = "http://127.0.0.1:8080";
 
-const PRESET_MODELS: Record<string, string[]> = {
-  anthropic: [
-    "anthropic/claude-sonnet-4-5",
-    "anthropic/claude-opus-4-5",
-    "anthropic/claude-haiku-4-5",
-  ],
-  openai: [
-    "openai/gpt-4o",
-    "openai/gpt-4o-mini",
-    "openai/o3-mini",
-  ],
-  gemini: [
-    "gemini/gemini-2.5-flash",
-    "gemini/gemini-2.0-flash",
-    "gemini/gemini-1.5-pro",
-  ],
-  mistral: [
-    "mistral/mistral-large-latest",
-    "mistral/mistral-small-latest",
-  ],
-  togetherai: [
-    "togetherai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    "togetherai/mistralai/Mixtral-8x7B-Instruct-v0.1",
-  ],
+// Fallback presets used when live API fetch fails or provider unsupported
+const FALLBACK_MODELS: Record<string, string[]> = {
   bedrock: [
     "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
     "bedrock/amazon.nova-pro-v1:0",
@@ -45,6 +23,9 @@ interface Props {
 
 export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const [providers, setProviders] = useState<string[]>([]);
+  // modelsByProvider[provider] = ["model-id", ...] (without provider/ prefix)
+  const [modelsByProvider, setModelsByProvider] = useState<Record<string, string[]>>({});
+  const [loadingModels, setLoadingModels] = useState(false);
   const [model, setModel] = useState("");
   const [customModel, setCustomModel] = useState("");
   const [useCustom, setUseCustom] = useState(false);
@@ -58,17 +39,38 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   useEffect(() => {
     if (!proxyOnline || configuredProviders.length === 0) return;
     setProviders(configuredProviders);
-    // Pick first preset model from first configured provider
-    for (const id of configuredProviders) {
-      const presets = PRESET_MODELS[id];
-      if (presets?.length) {
-        setModel(presets[0]);
-        return;
+
+    // Fetch live models for each provider in parallel
+    setLoadingModels(true);
+    Promise.all(
+      configuredProviders.map(async (p) => {
+        try {
+          const r = await fetch(`${PROXY_BASE}/admin/models/${p}`);
+          if (!r.ok) throw new Error();
+          const j: { models: string[] } = await r.json();
+          return [p, j.models] as const;
+        } catch {
+          return [p, FALLBACK_MODELS[p] ?? []] as const;
+        }
+      })
+    ).then((results) => {
+      const map: Record<string, string[]> = {};
+      for (const [p, models] of results) map[p] = models;
+      setModelsByProvider(map);
+      setLoadingModels(false);
+
+      // Set default model = first model of first provider with results
+      for (const p of configuredProviders) {
+        const first = map[p]?.[0];
+        if (first) {
+          setModel(`${p}/${first}`);
+          return;
+        }
       }
-    }
-    // No presets (e.g. azure-only) — fall back to custom
-    setUseCustom(true);
-    setCustomModel(`${configuredProviders[0]}/`);
+      // No live models — fall back to custom
+      setUseCustom(true);
+      setCustomModel(`${configuredProviders[0]}/`);
+    });
   }, [proxyOnline, configuredProviders]);
 
   useEffect(() => {
@@ -186,14 +188,16 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
             className="flex-1 text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
             value={model}
             onChange={(e) => setModel(e.target.value)}
+            disabled={loadingModels}
           >
-            {providers.length === 0 && (
+            {loadingModels && (
               <option value="" disabled>Loading models…</option>
             )}
-            {providers.flatMap((p) =>
-              (PRESET_MODELS[p] ?? []).map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))
+            {!loadingModels && providers.flatMap((p) =>
+              (modelsByProvider[p] ?? []).map((id) => {
+                const full = `${p}/${id}`;
+                return <option key={full} value={full}>{full}</option>;
+              })
             )}
           </select>
         )}
