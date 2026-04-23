@@ -16,6 +16,7 @@ use serde_json::json;
 use tower_http::trace::TraceLayer;
 
 use crate::{
+    config::AppConfig,
     registry::ProviderRegistry,
     usage_log::{self, UsageEntry, UsageStore},
 };
@@ -25,10 +26,13 @@ pub struct AppState {
     pub registry: Arc<ProviderRegistry>,
     pub usage_store: Option<UsageStore>,
     pub http: reqwest::Client,
-    /// Per-entry cap on captured request/response bodies. Bodies longer than
-    /// this are truncated with a `… [truncated N bytes]` marker so one huge
-    /// response can't OOM the server.
+    /// Per-entry cap on captured request/response bodies.
     pub max_body_bytes: usize,
+    // Admin API fields
+    pub cfg: Arc<AppConfig>,
+    pub cfg_path: Option<std::path::PathBuf>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub version: &'static str,
 }
 
 /// Truncate an already-UTF-8 string to at most `limit` bytes, appending a
@@ -47,6 +51,7 @@ fn truncate_body(s: String, limit: usize) -> String {
 }
 
 pub fn router(state: AppState) -> Router {
+    use crate::admin::admin_routes;
     Router::new()
         .route("/v1/chat/completions", post(chat_handler))
         .route("/v1/models", get(models_handler))
@@ -58,6 +63,7 @@ pub fn router(state: AppState) -> Router {
             "/gemini/v1beta/models/:model_id/generateContent",
             post(gemini_generate_content_handler),
         )
+        .merge(admin_routes())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
