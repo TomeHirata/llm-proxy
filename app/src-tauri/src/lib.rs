@@ -9,20 +9,20 @@ const PROXY_BASE: &str = "http://127.0.0.1:8080";
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // Hide the dock icon on macOS — this is a menu-bar-only app.
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
             build_tray(app)?;
 
-            // Pre-create the main window (hidden). It will be shown on tray click.
+            // Create and immediately show the dashboard on first launch.
             let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("llmproxy")
                 .inner_size(920.0, 640.0)
                 .min_inner_size(700.0, 480.0)
                 .center()
-                .visible(false)
+                .visible(true)
                 .build()?;
+
+            // Show as a regular app (dock icon) since the window is open.
+            #[cfg(target_os = "macos")]
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             // macOS: clicking the red close button hides rather than destroys.
             #[cfg(target_os = "macos")]
