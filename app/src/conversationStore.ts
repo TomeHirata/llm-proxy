@@ -26,16 +26,20 @@ function load(): Conversation[] {
   }
 }
 
+function byRecency(convos: Conversation[]): Conversation[] {
+  return [...convos].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
 function save(convos: Conversation[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(convos));
-  } catch {
-    // storage quota exceeded — drop oldest
-    const trimmed = convos.slice(-MAX_STORED);
+  // Always trim by recency so we drop the oldest, regardless of input order.
+  const candidates = byRecency(convos).slice(0, MAX_STORED);
+  // Try persisting; if quota is exceeded, progressively drop more entries.
+  for (let keep = candidates.length; keep > 0; keep--) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(candidates.slice(0, keep)));
+      return;
     } catch {
-      // ignore
+      // quota exceeded — try with fewer entries
     }
   }
 }
@@ -48,7 +52,7 @@ function titleFrom(messages: Message[]): string {
 
 export const conversationStore = {
   list(): Conversation[] {
-    return load().sort((a, b) => b.updatedAt - a.updatedAt);
+    return byRecency(load());
   },
 
   get(id: string): Conversation | undefined {
@@ -57,9 +61,8 @@ export const conversationStore = {
 
   upsert(convo: Conversation): void {
     const all = load().filter((c) => c.id !== convo.id);
-    // Recompute title from messages
     const updated = { ...convo, title: titleFrom(convo.messages), updatedAt: Date.now() };
-    save([...all, updated].slice(-MAX_STORED));
+    save([...all, updated]);
   },
 
   remove(id: string): void {

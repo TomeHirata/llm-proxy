@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { conversationStore, type Conversation, type Message } from "../conversationStore";
 
 const PROXY_BASE = "http://127.0.0.1:8080";
@@ -55,6 +55,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const lastSaveRef = useRef<number>(0); // throttle localStorage writes during streaming
 
   // Fetch live model lists when configured providers change
   useEffect(() => {
@@ -106,6 +107,33 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
     setSelectedModel(modelsByProvider[p]?.[0] ?? "");
   };
 
+  // Restore model selector from a stored conversation.
+  // Falls back to custom mode when the provider/model isn't in the current preset lists.
+  const applyConvoModel = useCallback((model: string) => {
+    const [p, ...rest] = model.split("/");
+    const m = rest.join("/");
+    const providerAvailable = !!p && configuredProviders.includes(p);
+    const modelAvailable = !!m && (modelsByProvider[p] ?? []).includes(m);
+    if (providerAvailable && modelAvailable) {
+      setSelectedProvider(p);
+      setSelectedModel(m);
+      setCustomModel("");
+      setUseCustom(false);
+    } else {
+      setSelectedProvider("");
+      setSelectedModel("");
+      setCustomModel(model);
+      setUseCustom(true);
+    }
+  }, [configuredProviders, modelsByProvider]);
+
+  // On mount and whenever activeConvId changes, restore the model selector.
+  useEffect(() => {
+    if (!activeConvId) return;
+    const convo = conversationStore.get(activeConvId);
+    if (convo?.model) applyConvoModel(convo.model);
+  }, [activeConvId, applyConvoModel]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -125,20 +153,9 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
 
   const loadConversation = (id: string) => {
     abortRef.current?.abort();
-    setActiveConvId(id);
+    setActiveConvId(id); // triggers the applyConvoModel effect above
     setShowHistory(false);
     setError(null);
-    // Restore model selection if available
-    const convo = conversationStore.get(id);
-    if (convo?.model) {
-      const [p, ...rest] = convo.model.split("/");
-      const m = rest.join("/");
-      if (p && m) {
-        setSelectedProvider(p);
-        setSelectedModel(m);
-        setUseCustom(false);
-      }
-    }
   };
 
   const deleteConversation = (id: string) => {
@@ -207,9 +224,13 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
                   ? { ...m, content: m.content + delta }
                   : m
               );
-              // Trigger re-render by updating store and state
-              conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages });
-              setConversations(conversationStore.list());
+              // Throttle localStorage writes to avoid jank on long streams
+              const now = Date.now();
+              if (now - lastSaveRef.current >= 500) {
+                conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages });
+                setConversations(conversationStore.list());
+                lastSaveRef.current = now;
+              }
             }
           } catch {
             // non-JSON line, ignore
@@ -284,9 +305,11 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
                   <p className="text-[10px] text-gray-400 mt-0.5">{c.model || c.provider}</p>
                 </div>
                 <button
+                  type="button"
                   onClick={(e) => { e.stopPropagation(); deleteConversation(c.id); }}
                   className="ml-1 opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 text-xs leading-none flex-shrink-0"
-                  title="Delete"
+                  title="Delete conversation"
+                  aria-label="Delete conversation"
                 >
                   ✕
                 </button>
@@ -301,9 +324,11 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
         <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-100 bg-gray-50 flex-wrap">
           {/* History toggle */}
           <button
+            type="button"
             onClick={() => setShowHistory((v) => !v)}
             className={`text-xs px-2 py-1 rounded border whitespace-nowrap ${showHistory ? "border-blue-300 text-blue-600 bg-blue-50" : "border-gray-200 text-gray-400 hover:text-gray-600"}`}
             title="Conversation history"
+            aria-label="Toggle conversation history"
           >
             ☰
           </button>
