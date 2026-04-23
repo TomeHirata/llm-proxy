@@ -2,13 +2,22 @@ import { useEffect, useRef, useState } from "react";
 
 const PROXY_BASE = "http://127.0.0.1:8080";
 
-// Fallback presets used when live API fetch fails or provider unsupported
 const FALLBACK_MODELS: Record<string, string[]> = {
   bedrock: [
-    "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "bedrock/amazon.nova-pro-v1:0",
+    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "amazon.nova-pro-v1:0",
   ],
   azure: [],
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  gemini: "Gemini",
+  mistral: "Mistral",
+  togetherai: "TogetherAI",
+  bedrock: "AWS Bedrock",
+  azure: "Azure OpenAI",
 };
 
 interface Message {
@@ -22,13 +31,15 @@ interface Props {
 }
 
 export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
-  const [providers, setProviders] = useState<string[]>([]);
-  // modelsByProvider[provider] = ["model-id", ...] (without provider/ prefix)
   const [modelsByProvider, setModelsByProvider] = useState<Record<string, string[]>>({});
   const [loadingModels, setLoadingModels] = useState(false);
-  const [model, setModel] = useState("");
-  const [customModel, setCustomModel] = useState("");
+
+  // Two-step selection: provider → model
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [selectedModel, setSelectedModel] = useState("");
   const [useCustom, setUseCustom] = useState(false);
+  const [customModel, setCustomModel] = useState("");
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -36,11 +47,10 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Fetch live model lists when configured providers change
   useEffect(() => {
     if (!proxyOnline || configuredProviders.length === 0) return;
-    setProviders(configuredProviders);
 
-    // Fetch live models for each provider in parallel
     setLoadingModels(true);
     Promise.all(
       configuredProviders.map(async (p) => {
@@ -59,25 +69,43 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       setModelsByProvider(map);
       setLoadingModels(false);
 
-      // Set default model = first model of first provider with results
+      // Auto-select first provider + model
       for (const p of configuredProviders) {
-        const first = map[p]?.[0];
-        if (first) {
-          setModel(`${p}/${first}`);
+        if (map[p]?.length) {
+          setSelectedProvider(p);
+          setSelectedModel(map[p][0]);
           return;
         }
       }
-      // No live models — fall back to custom
-      setUseCustom(true);
-      setCustomModel(`${configuredProviders[0]}/`);
+      // No live models available — drop into custom mode
+      if (configuredProviders.length > 0) {
+        setUseCustom(true);
+        setSelectedProvider(configuredProviders[0]);
+        setCustomModel(`${configuredProviders[0]}/`);
+      }
     });
   }, [proxyOnline, configuredProviders]);
+
+  // When provider changes, reset model to first in list
+  const handleProviderChange = (p: string) => {
+    setSelectedProvider(p);
+    const first = modelsByProvider[p]?.[0] ?? "";
+    setSelectedModel(first);
+    if (!first && !useCustom) {
+      setUseCustom(true);
+      setCustomModel(`${p}/`);
+    }
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const activeModel = useCustom ? customModel.trim() : model;
+  const activeModel = useCustom
+    ? customModel.trim()
+    : selectedProvider && selectedModel
+      ? `${selectedProvider}/${selectedModel}`
+      : "";
 
   const send = async () => {
     const text = input.trim();
@@ -143,25 +171,15 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       }
     } catch (e: unknown) {
       if ((e as { name?: string }).name === "AbortError") {
-        // user cancelled
+        // user cancelled — leave the partial response
       } else {
         setError(String(e));
-        setMessages((prev) => prev.slice(0, -1)); // remove empty assistant bubble
+        setMessages((prev) => prev.slice(0, -1));
       }
     } finally {
       setStreaming(false);
       abortRef.current = null;
     }
-  };
-
-  const stop = () => {
-    abortRef.current?.abort();
-  };
-
-  const clear = () => {
-    abortRef.current?.abort();
-    setMessages([]);
-    setError(null);
   };
 
   if (!proxyOnline) {
@@ -172,49 +190,68 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
     );
   }
 
+  const modelsForProvider = selectedProvider ? (modelsByProvider[selectedProvider] ?? []) : [];
+
   return (
     <div className="flex flex-col h-full">
-      {/* Model picker */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-100 bg-gray-50">
+      {/* Model selector bar */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-100 bg-gray-50 flex-wrap">
+        {/* Provider select */}
+        <select
+          className="text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
+          value={selectedProvider}
+          onChange={(e) => handleProviderChange(e.target.value)}
+          disabled={loadingModels}
+        >
+          {configuredProviders.length === 0 && (
+            <option value="" disabled>No providers configured</option>
+          )}
+          {configuredProviders.map((p) => (
+            <option key={p} value={p}>{PROVIDER_LABELS[p] ?? p}</option>
+          ))}
+        </select>
+
+        {/* Model select or custom input */}
         {useCustom ? (
           <input
-            className="flex-1 text-sm border border-gray-200 rounded px-2 py-1 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+            className="flex-1 min-w-[200px] text-sm border border-gray-200 rounded px-2 py-1 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
             placeholder="provider/model-id"
             value={customModel}
             onChange={(e) => setCustomModel(e.target.value)}
           />
         ) : (
           <select
-            className="flex-1 text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            disabled={loadingModels}
+            className="flex-1 min-w-[200px] text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            disabled={loadingModels || modelsForProvider.length === 0}
           >
-            {loadingModels && (
-              <option value="" disabled>Loading models…</option>
+            {loadingModels && <option value="" disabled>Loading…</option>}
+            {!loadingModels && modelsForProvider.length === 0 && (
+              <option value="" disabled>No models found</option>
             )}
-            {!loadingModels && providers.flatMap((p) =>
-              (modelsByProvider[p] ?? []).map((id) => {
-                const full = `${p}/${id}`;
-                return <option key={full} value={full}>{full}</option>;
-              })
-            )}
+            {modelsForProvider.map((id) => (
+              <option key={id} value={id}>{id}</option>
+            ))}
           </select>
         )}
+
+        {/* Custom toggle */}
         <button
           onClick={() => {
-            setUseCustom((v) => !v);
-            if (!useCustom) setCustomModel(activeModel);
+            const next = !useCustom;
+            setUseCustom(next);
+            if (next) setCustomModel(activeModel || `${selectedProvider}/`);
           }}
-          className="text-xs text-gray-400 hover:text-gray-600 px-1"
-          title={useCustom ? "Use preset" : "Enter custom model"}
+          className="text-xs text-gray-400 hover:text-gray-600 whitespace-nowrap"
         >
-          {useCustom ? "presets" : "custom"}
+          {useCustom ? "← presets" : "custom →"}
         </button>
+
         {messages.length > 0 && (
           <button
-            onClick={clear}
-            className="text-xs text-gray-400 hover:text-red-500 px-1"
+            onClick={() => { abortRef.current?.abort(); setMessages([]); setError(null); }}
+            className="text-xs text-gray-400 hover:text-red-500 whitespace-nowrap"
           >
             clear
           </button>
@@ -271,7 +308,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
         />
         {streaming ? (
           <button
-            onClick={stop}
+            onClick={() => abortRef.current?.abort()}
             className="px-4 py-2 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200"
           >
             Stop

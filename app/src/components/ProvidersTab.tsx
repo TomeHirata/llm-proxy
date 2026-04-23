@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { api, type Config, type ProviderPatch } from "../api";
 
 const ALL_PROVIDERS = [
@@ -25,6 +26,7 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,11 +58,21 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
     if (draft.region) patch.region = draft.region;
     try {
       await api.updateProvider(name, patch);
-      const updated = await api.config();
-      setCfg(updated);
       setEditing(null);
       setSaved(name);
-      setTimeout(() => setSaved(null), 2000);
+      // Restart proxy so it reloads credentials from the updated config file
+      setRestarting(true);
+      try {
+        await invoke("stop_proxy");
+        await new Promise((r) => setTimeout(r, 600));
+        await invoke("start_proxy");
+        await new Promise((r) => setTimeout(r, 800));
+        const updated = await api.config();
+        setCfg(updated);
+      } finally {
+        setRestarting(false);
+      }
+      setTimeout(() => setSaved(null), 3000);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -113,7 +125,7 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
                 </span>
                 {saved === name && (
                   <span className="text-xs text-green-600 font-medium">
-                    ✓ Saved
+                    {restarting ? "Restarting proxy…" : "✓ Saved & restarted"}
                   </span>
                 )}
               </div>
