@@ -65,7 +65,7 @@ function renderMessageContent(content: string | ContentPart[], isStreaming: bool
   ) : null;
 
   if (typeof content === "string") {
-    return <>{content}{cursor}</>;
+    return <><span className="whitespace-pre-wrap">{content}</span>{cursor}</>;
   }
 
   return (

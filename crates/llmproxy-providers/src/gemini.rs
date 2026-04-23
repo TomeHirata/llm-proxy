@@ -13,47 +13,81 @@ use serde_json::{json, Value};
 
 const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
 
-fn parse_data_url(url: &str) -> Option<(&str, &str)> {
-    let rest = url.strip_prefix("data:")?;
-    let (meta, data) = rest.split_once(',')?;
-    let mime = meta.strip_suffix(";base64")?;
-    Some((mime, data))
-}
-
 /// Convert a `MessageContent` to an array of Gemini `parts`.
+/// Unsupported or malformed parts produce a visible `[Unsupported …]` text part
+/// so the message is never silently empty.
 fn content_to_gemini_parts(content: &MessageContent) -> Vec<Value> {
     match content {
         MessageContent::Text(s) => vec![json!({"text": s})],
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|p| match p.get("type").and_then(|t| t.as_str()) {
-                Some("text") => {
-                    let text = p.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    Some(json!({"text": text}))
+        MessageContent::Parts(parts) => {
+            let mut gemini_parts = Vec::with_capacity(parts.len());
+            for p in parts {
+                match p.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => {
+                        let text = p.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        gemini_parts.push(json!({"text": text}));
+                    }
+                    Some("image_url") => {
+                        let url = p
+                            .get("image_url")
+                            .and_then(|u| u.get("url"))
+                            .and_then(|u| u.as_str());
+                        match url.and_then(crate::util::parse_data_url) {
+                            Some((mime, data)) => {
+                                gemini_parts
+                                    .push(json!({"inlineData": {"mimeType": mime, "data": data}}));
+                            }
+                            None => {
+                                let fallback = match url {
+                                    Some(u) => format!(
+                                        "[Unsupported image_url for Gemini: expected base64 data URL, got {u}]"
+                                    ),
+                                    None => "[Unsupported image_url for Gemini: missing url]"
+                                        .to_string(),
+                                };
+                                gemini_parts.push(json!({"text": fallback}));
+                            }
+                        }
+                    }
+                    Some("input_audio") => {
+                        let audio = p.get("input_audio");
+                        let data = audio.and_then(|a| a.get("data")).and_then(|d| d.as_str());
+                        let format = audio
+                            .and_then(|a| a.get("format"))
+                            .and_then(|f| f.as_str())
+                            .unwrap_or("mp3");
+                        match data {
+                            Some(data) => {
+                                let mime = match format {
+                                    "wav" => "audio/wav",
+                                    "ogg" => "audio/ogg",
+                                    "webm" => "audio/webm",
+                                    _ => "audio/mpeg",
+                                };
+                                gemini_parts
+                                    .push(json!({"inlineData": {"mimeType": mime, "data": data}}));
+                            }
+                            None => {
+                                gemini_parts.push(json!({
+                                    "text": "[Unsupported input_audio for Gemini: missing data]"
+                                }));
+                            }
+                        }
+                    }
+                    Some(kind) => {
+                        gemini_parts.push(
+                            json!({"text": format!("[Unsupported content part for Gemini: {kind}]")}),
+                        );
+                    }
+                    None => {
+                        gemini_parts.push(
+                            json!({"text": "[Unsupported content part for Gemini: missing type]"}),
+                        );
+                    }
                 }
-                Some("image_url") => {
-                    let url = p.get("image_url")?.get("url")?.as_str()?;
-                    let (mime, data) = parse_data_url(url)?;
-                    Some(json!({"inlineData": {"mimeType": mime, "data": data}}))
-                }
-                Some("input_audio") => {
-                    let audio = p.get("input_audio")?;
-                    let data = audio.get("data").and_then(|d| d.as_str())?;
-                    let format = audio
-                        .get("format")
-                        .and_then(|f| f.as_str())
-                        .unwrap_or("mp3");
-                    let mime = match format {
-                        "wav" => "audio/wav",
-                        "ogg" => "audio/ogg",
-                        "webm" => "audio/webm",
-                        _ => "audio/mpeg",
-                    };
-                    Some(json!({"inlineData": {"mimeType": mime, "data": data}}))
-                }
-                _ => None,
-            })
-            .collect(),
+            }
+            gemini_parts
+        }
     }
 }
 
@@ -471,6 +505,32 @@ mod tests {
         let parts = content_to_gemini_parts(&c);
         assert_eq!(parts[0]["inlineData"]["mimeType"], "audio/wav");
         assert_eq!(parts[0]["inlineData"]["data"], "xyz");
+    }
+
+    #[test]
+    fn content_to_gemini_parts_non_data_url_fallback() {
+        let c = MessageContent::Parts(vec![
+            serde_json::json!({"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}),
+        ]);
+        let parts = content_to_gemini_parts(&c);
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported image_url for Gemini"));
+    }
+
+    #[test]
+    fn content_to_gemini_parts_unknown_type_fallback() {
+        let c = MessageContent::Parts(vec![
+            serde_json::json!({"type": "video_url", "video_url": {"url": "data:video/mp4;base64,xyz"}}),
+        ]);
+        let parts = content_to_gemini_parts(&c);
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported content part for Gemini: video_url"));
     }
 
     #[test]

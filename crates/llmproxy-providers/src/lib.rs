@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod bedrock;
 pub mod gemini;
 pub mod passthrough;
+mod util;
 
 pub use anthropic::AnthropicProvider;
 pub use bedrock::BedrockProvider;
