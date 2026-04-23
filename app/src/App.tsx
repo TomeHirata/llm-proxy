@@ -11,6 +11,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("usage");
   const [status, setStatus] = useState<ProxyStatus | null>(null);
   const [proxyOnline, setProxyOnline] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const refreshStatus = async () => {
     try {
@@ -30,10 +31,15 @@ export default function App() {
   }, []);
 
   const handleStartStop = async () => {
-    if (proxyOnline) {
-      await invoke("stop_proxy");
-    } else {
-      await invoke("start_proxy");
+    setActionError(null);
+    try {
+      if (proxyOnline) {
+        await invoke("stop_proxy");
+      } else {
+        await invoke("start_proxy");
+      }
+    } catch (e) {
+      setActionError(String(e));
     }
     setTimeout(refreshStatus, 800);
   };
@@ -79,6 +85,14 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Error banner */}
+      {actionError && (
+        <div className="flex items-center justify-between px-5 py-2 bg-red-50 border-b border-red-200 text-sm text-red-700">
+          <span>{actionError}</span>
+          <button onClick={() => setActionError(null)} className="ml-4 text-red-400 hover:text-red-600">✕</button>
+        </div>
+      )}
 
       {/* Tab bar */}
       <nav className="flex gap-0 bg-white border-b border-gray-200 px-5">

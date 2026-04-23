@@ -5,11 +5,9 @@ use tauri::{
 };
 
 const PROXY_BASE: &str = "http://127.0.0.1:8080";
-const LLMPROXY_BIN: &str = "llmproxy";
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // Hide the dock icon on macOS — this is a menu-bar-only app.
             #[cfg(target_os = "macos")]
@@ -116,14 +114,38 @@ async fn start_proxy(app: tauri::AppHandle) -> Result<String, String> {
     do_start_proxy(&app).await
 }
 
-async fn do_start_proxy(app: &tauri::AppHandle) -> Result<String, String> {
-    use tauri_plugin_shell::ShellExt;
-    app.shell()
-        .sidecar(LLMPROXY_BIN)
-        .map_err(|e| e.to_string())?
+fn llmproxy_bin() -> std::path::PathBuf {
+    // In the app bundle: sidecar sits next to the main binary in Contents/MacOS/
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let bin = dir.join("llmproxy");
+            if bin.exists() {
+                return bin;
+            }
+        }
+    }
+    // Dev fallback: rely on PATH
+    std::path::PathBuf::from("llmproxy")
+}
+
+async fn do_start_proxy(_app: &tauri::AppHandle) -> Result<String, String> {
+    let out = std::process::Command::new(llmproxy_bin())
         .args(["serve", "--daemon"])
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .output()
+        .map_err(|e| format!("failed to run llmproxy: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let msg = if stderr.is_empty() {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        } else {
+            stderr
+        };
+        return Err(if msg.is_empty() {
+            format!("llmproxy exited with {}", out.status)
+        } else {
+            msg
+        });
+    }
     Ok("started".into())
 }
 
@@ -133,17 +155,24 @@ async fn stop_proxy(app: tauri::AppHandle) -> Result<String, String> {
     do_stop_proxy(&app).await
 }
 
-async fn do_stop_proxy(app: &tauri::AppHandle) -> Result<String, String> {
-    use tauri_plugin_shell::ShellExt;
-    // `llmproxy stop` reads the PID file and sends SIGTERM — it exits quickly,
-    // so we wait for its output rather than spawning and forgetting.
-    app.shell()
-        .sidecar(LLMPROXY_BIN)
-        .map_err(|e| e.to_string())?
-        .args(["stop"])
+async fn do_stop_proxy(_app: &tauri::AppHandle) -> Result<String, String> {
+    let out = std::process::Command::new(llmproxy_bin())
+        .arg("stop")
         .output()
-        .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("failed to run llmproxy: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let msg = if stderr.is_empty() {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        } else {
+            stderr
+        };
+        return Err(if msg.is_empty() {
+            format!("llmproxy exited with {}", out.status)
+        } else {
+            msg
+        });
+    }
     Ok("stopped".into())
 }
 
