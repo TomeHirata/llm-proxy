@@ -173,8 +173,59 @@ jobs:
           name: deb-${{ matrix.distro }}-${{ matrix.codename }}-${{ matrix.arch }}
           path: target/debian/*.deb
 
+  build-dmg:
+    needs: [build-binaries]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llmproxy-x86_64-apple-darwin
+          path: artifacts/x86_64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llmproxy-aarch64-apple-darwin
+          path: artifacts/aarch64
+      - name: Build universal sidecar and place it for Tauri
+        run: |
+          lipo -create \
+            artifacts/x86_64/llmproxy \
+            artifacts/aarch64/llmproxy \
+            -output artifacts/llmproxy-universal-apple-darwin
+          mkdir -p app/src-tauri/binaries
+          cp artifacts/llmproxy-universal-apple-darwin \
+             app/src-tauri/binaries/llmproxy-aarch64-apple-darwin
+          cp artifacts/llmproxy-universal-apple-darwin \
+             app/src-tauri/binaries/llmproxy-x86_64-apple-darwin
+          chmod +x app/src-tauri/binaries/llmproxy-*
+      - name: Install frontend deps
+        working-directory: app
+        run: npm ci
+      - name: Build Tauri app (universal DMG)
+        working-directory: app
+        run: npx tauri build --target universal-apple-darwin
+      - name: Rename DMG with version tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dmg=$(find app/src-tauri/target/universal-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
+          base=$(basename "$dmg" .dmg)
+          cp "$dmg" "llmproxy-${TAG:-dev}-universal-apple-darwin.dmg"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dmg-universal-apple-darwin
+          path: "*.dmg"
+
   github-release:
-    needs: [build-binaries, macos-universal, build-deb]
+    needs: [build-binaries, macos-universal, build-deb, build-dmg]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -209,6 +260,8 @@ jobs:
           done
           # .debs are shipped as-is.
           find artifacts -name '*.deb' -exec cp {} release/ \;
+          # DMG is shipped as-is.
+          find artifacts -name '*.dmg' -exec cp {} release/ \;
           ( cd release && sha256sum * > SHA256SUMS )
           ls -la release/
       - name: Create GitHub Release
