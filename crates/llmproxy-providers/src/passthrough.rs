@@ -88,6 +88,8 @@ impl PassthroughProvider {
         body["model"] = serde_json::json!(model_id);
         if stream {
             body["stream"] = serde_json::json!(true);
+            // Request a trailing usage chunk so token counts are logged.
+            body["stream_options"] = serde_json::json!({"include_usage": true});
         } else {
             // Clear any client-sent "stream: true" since the caller asked for non-streaming.
             if let Some(obj) = body.as_object_mut() {
