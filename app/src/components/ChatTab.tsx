@@ -226,8 +226,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
             value={customModel}
             onChange={(e) => setCustomModel(e.target.value)}
           />
-        ) : (
-          {selectedProvider && modelErrors[selectedProvider] && !loadingModels ? (
+        ) : selectedProvider && modelErrors[selectedProvider] && !loadingModels ? (
           <div className="flex-1 min-w-[200px] text-xs text-red-500 px-2 py-1 border border-red-200 rounded bg-red-50 truncate" title={modelErrors[selectedProvider]}>
             {modelErrors[selectedProvider]}
           </div>
@@ -246,7 +245,6 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
               <option key={id} value={id}>{id}</option>
             ))}
           </select>
-        )}
         )}
 
         {/* Custom toggle */}
