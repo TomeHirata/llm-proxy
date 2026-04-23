@@ -396,9 +396,7 @@ mod tests {
 
     #[test]
     fn content_to_anthropic_text_part() {
-        let c = MessageContent::Parts(vec![
-            serde_json::json!({"type": "text", "text": "hello"}),
-        ]);
+        let c = MessageContent::Parts(vec![serde_json::json!({"type": "text", "text": "hello"})]);
         let v = content_to_anthropic(&c);
         assert_eq!(v[0]["type"], "text");
         assert_eq!(v[0]["text"], "hello");

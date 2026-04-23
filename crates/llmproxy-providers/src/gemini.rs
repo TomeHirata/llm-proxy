@@ -39,7 +39,10 @@ fn content_to_gemini_parts(content: &MessageContent) -> Vec<Value> {
                 Some("input_audio") => {
                     let audio = p.get("input_audio")?;
                     let data = audio.get("data").and_then(|d| d.as_str())?;
-                    let format = audio.get("format").and_then(|f| f.as_str()).unwrap_or("mp3");
+                    let format = audio
+                        .get("format")
+                        .and_then(|f| f.as_str())
+                        .unwrap_or("mp3");
                     let mime = match format {
                         "wav" => "audio/wav",
                         "ogg" => "audio/ogg",
@@ -103,7 +106,11 @@ impl GeminiProvider {
             .iter()
             .filter(|m| m.role != "system")
             .map(|m| {
-                let role = if m.role == "assistant" { "model" } else { "user" };
+                let role = if m.role == "assistant" {
+                    "model"
+                } else {
+                    "user"
+                };
                 json!({
                     "role": role,
                     "parts": content_to_gemini_parts(&m.content),
