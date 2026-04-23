@@ -9,13 +9,12 @@ const PROXY_BASE: &str = "http://127.0.0.1:8080";
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // Stay as a menu-bar-only app (no dock icon) on macOS.
+            // Start as menu-bar-only; tray must register before any window appears.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             build_tray(app)?;
 
-            // Build hidden first so the tray registers before the window appears.
             let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("llmproxy")
                 .inner_size(920.0, 640.0)
@@ -23,9 +22,6 @@ pub fn run() {
                 .center()
                 .visible(false)
                 .build()?;
-
-            // Show immediately — tray is already registered at this point.
-            let _ = win.show();
 
             // macOS: clicking the red close button hides rather than destroys.
             #[cfg(target_os = "macos")]
@@ -38,8 +34,13 @@ pub fn run() {
                     if let Some(w) = handle.get_webview_window("main") {
                         let _ = w.hide();
                     }
+                    #[cfg(target_os = "macos")]
+                    let _ = handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             });
+
+            // Open dashboard on first launch.
+            show_window(app.handle());
 
             Ok(())
         })
@@ -102,6 +103,8 @@ fn show_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.set_focus();
+        #[cfg(target_os = "macos")]
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     }
 }
 
