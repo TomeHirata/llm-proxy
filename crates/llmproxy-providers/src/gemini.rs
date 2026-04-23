@@ -329,7 +329,13 @@ fn translate_gemini_event(
         out.push(format_sse(&chunk));
     }
     if finish.is_some() {
-        let chunk = json!({
+        let pt = value["usageMetadata"]["promptTokenCount"].as_i64();
+        let ct = value["usageMetadata"]["candidatesTokenCount"].as_i64();
+        let tt = pt
+            .zip(ct)
+            .map(|(p, c)| p + c)
+            .or_else(|| value["usageMetadata"]["totalTokenCount"].as_i64());
+        let mut chunk = json!({
             "id": chat_id,
             "object": "chat.completion.chunk",
             "created": created,
@@ -340,6 +346,13 @@ fn translate_gemini_event(
                 "finish_reason": finish,
             }]
         });
+        if pt.is_some() || ct.is_some() {
+            chunk["usage"] = json!({
+                "prompt_tokens": pt,
+                "completion_tokens": ct,
+                "total_tokens": tt,
+            });
+        }
         out.push(format_sse(&chunk));
     }
     out
