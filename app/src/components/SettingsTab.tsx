@@ -45,7 +45,7 @@ export default function SettingsTab({ status }: Props) {
           and prefix the model name with the provider:
         </p>
         <CodeBlock>{`from openai import OpenAI
-client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="")
 client.chat.completions.create(
     model="anthropic/claude-sonnet-4-5",
     messages=[{"role": "user", "content": "hello"}],
