@@ -83,7 +83,42 @@ sudo mv "llmproxy-${VERSION}-x86_64-unknown-linux-gnu/llmproxy" /usr/local/bin/l
 # For arm64: replace x86_64-unknown-linux-gnu with aarch64-unknown-linux-gnu
 ```
 
-### From source
+### macOS desktop app (menu-bar UI)
+
+Requires Node.js 18+ and Rust (install via [rustup](https://rustup.rs)).
+
+```bash
+git clone https://github.com/TomeHirata/llm-proxy
+cd llm-proxy
+
+# 1. Build the CLI binary and place it as a sidecar inside the app bundle
+./scripts/prepare-sidecar.sh --release
+
+# 2. Build the .app bundle
+cd app
+npm install
+npm run tauri build
+
+# 3. Install
+cp -r src-tauri/target/release/bundle/macos/llmproxy.app /Applications/
+
+# 4. Clear Gatekeeper quarantine (required until the app is code-signed)
+xattr -dr com.apple.quarantine /Applications/llmproxy.app
+
+# 5. Launch — the app appears in your menu bar
+open /Applications/llmproxy.app
+```
+
+The menu-bar icon lets you start/stop the proxy and open the dashboard
+(usage stats + API key config). No separate `llmproxy serve` needed.
+
+**Dev mode** (hot-reload):
+```bash
+cd app
+npm run tauri dev   # runs prepare-sidecar (debug build) + Vite + Tauri
+```
+
+### From source (CLI only)
 
 ```bash
 cargo build --release -p llmproxy-server

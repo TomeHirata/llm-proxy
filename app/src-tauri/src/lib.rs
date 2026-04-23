@@ -135,14 +135,15 @@ async fn stop_proxy(app: tauri::AppHandle) -> Result<String, String> {
 
 async fn do_stop_proxy(app: &tauri::AppHandle) -> Result<String, String> {
     use tauri_plugin_shell::ShellExt;
-    let (mut _rx, child) = app
-        .shell()
+    // `llmproxy stop` reads the PID file and sends SIGTERM — it exits quickly,
+    // so we wait for its output rather than spawning and forgetting.
+    app.shell()
         .sidecar(LLMPROXY_BIN)
         .map_err(|e| e.to_string())?
         .args(["stop"])
-        .spawn()
+        .output()
+        .await
         .map_err(|e| e.to_string())?;
-    let _ = child.kill();
     Ok("stopped".into())
 }
 
