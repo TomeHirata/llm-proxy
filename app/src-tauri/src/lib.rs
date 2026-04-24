@@ -11,7 +11,7 @@ pub fn run() {
         .setup(|app| {
             // Start as menu-bar-only; tray must register before any window appears.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             build_tray(app)?;
 

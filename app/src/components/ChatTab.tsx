@@ -127,11 +127,11 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [streamingMessages, setStreamingMessages] = useState<Message[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const lastSaveRef = useRef<number>(0);
 
   useEffect(() => {
     if (!proxyOnline || configuredProviders.length === 0) return;
@@ -208,7 +208,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, streamingMessages]);
 
   const activeModel = useCustom
     ? customModel.trim()
@@ -247,6 +247,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
     files.forEach((file) => {
       const reader = new FileReader();
       const isImage = file.type.startsWith("image/");
+      const isAudio = file.type.startsWith("audio/");
       reader.onload = (ev) => {
         const dataUrl = ev.target?.result as string;
         if (isImage) {
@@ -257,16 +258,19 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
             data: dataUrl,
             mimeType: file.type,
           }]);
-        } else {
+        } else if (isAudio) {
           const base64 = dataUrl.split(",")[1] ?? "";
-          const ext = file.name.split(".").pop()?.toLowerCase() ?? "mp3";
+          const format = file.type.includes("wav") ? "wav"
+            : file.type.includes("ogg") ? "ogg"
+            : file.type.includes("webm") ? "webm"
+            : "mp3";
           setAttachments((prev) => [...prev, {
             id: crypto.randomUUID(),
             name: file.name,
             mediaType: "audio",
             data: base64,
             mimeType: file.type,
-            format: ext,
+            format,
           }]);
         }
       };
@@ -347,12 +351,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
                   ? { ...m, content: (m.content as string) + delta }
                   : m
               );
-              const now = Date.now();
-              if (now - lastSaveRef.current >= 500) {
-                conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
-                setConversations(conversationStore.list());
-                lastSaveRef.current = now;
-              }
+              setStreamingMessages([...latestMessages]);
             }
           } catch {
             // non-JSON line, ignore
@@ -366,6 +365,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
           conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
           setConversations(conversationStore.list());
         }
+        setStreamingMessages(null);
         return;
       } else {
         setError(String(e));
@@ -375,6 +375,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       }
     } finally {
       setStreaming(false);
+      setStreamingMessages(null);
       abortRef.current = null;
     }
     const last = latestMessages[latestMessages.length - 1];
@@ -396,7 +397,8 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   }
 
   const modelsForProvider = selectedProvider ? (modelsByProvider[selectedProvider] ?? []) : [];
-  const currentMessages = activeConvId ? (conversationStore.get(activeConvId)?.messages ?? []) as Message[] : [];
+  const storedMessages = activeConvId ? (conversationStore.get(activeConvId)?.messages ?? []) as Message[] : [];
+  const currentMessages = streamingMessages ?? storedMessages;
 
   return (
     <div className="flex h-full">

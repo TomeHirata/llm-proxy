@@ -1,9 +1,14 @@
 const STORAGE_KEY = "llmproxy-conversations";
 const MAX_STORED = 50;
 
+type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_audio"; input_audio: { data: string; format: string } };
+
 export interface Message {
   role: "user" | "assistant";
-  content: string;
+  content: string | ContentPart[];
 }
 
 export interface Conversation {
@@ -47,7 +52,10 @@ function save(convos: Conversation[]): void {
 function titleFrom(messages: Message[]): string {
   const first = messages.find((m) => m.role === "user");
   if (!first) return "New conversation";
-  return first.content.slice(0, 60) + (first.content.length > 60 ? "…" : "");
+  const text = typeof first.content === "string"
+    ? first.content
+    : first.content.find((p): p is { type: "text"; text: string } => p.type === "text")?.text ?? "";
+  return text.slice(0, 60) + (text.length > 60 ? "…" : "");
 }
 
 export const conversationStore = {
