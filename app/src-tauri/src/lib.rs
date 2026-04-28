@@ -326,15 +326,22 @@ fn apply_claude_code(model: &str) -> Result<(), String> {
     } else {
         serde_json::Map::new()
     };
-    env_map.insert("ANTHROPIC_BASE_URL".into(),
-        serde_json::Value::String("http://localhost:8080/anthropic".into()));
-    env_map.insert("ANTHROPIC_API_KEY".into(),
-        serde_json::Value::String("llmproxy".into()));
+    env_map.insert(
+        "ANTHROPIC_BASE_URL".into(),
+        serde_json::Value::String("http://localhost:8080/anthropic".into()),
+    );
+    env_map.insert(
+        "ANTHROPIC_API_KEY".into(),
+        serde_json::Value::String("llmproxy".into()),
+    );
     json["env"] = serde_json::Value::Object(env_map);
     json["model"] = serde_json::Value::String(model.into());
 
-    std::fs::write(&path, serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn apply_codex(model: &str) -> Result<(), String> {
@@ -351,26 +358,39 @@ fn apply_codex(model: &str) -> Result<(), String> {
         toml::map::Map::new()
     };
 
-    table.insert("model_provider".into(), toml::Value::String("llmproxy".into()));
+    table.insert(
+        "model_provider".into(),
+        toml::Value::String("llmproxy".into()),
+    );
     table.insert("model".into(), toml::Value::String(model.into()));
     table.insert("api_key".into(), toml::Value::String("llmproxy".into()));
-    table.insert("disable_response_storage".into(), toml::Value::Boolean(true));
+    table.insert(
+        "disable_response_storage".into(),
+        toml::Value::Boolean(true),
+    );
 
     // [model_providers.llmproxy]
     let mut provider = toml::map::Map::new();
     provider.insert("name".into(), toml::Value::String("llmproxy".into()));
-    provider.insert("base_url".into(),
-        toml::Value::String("http://localhost:8080/openai/v1".into()));
+    provider.insert(
+        "base_url".into(),
+        toml::Value::String("http://localhost:8080/openai/v1".into()),
+    );
     provider.insert("wire_api".into(), toml::Value::String("responses".into()));
     provider.insert("requires_openai_auth".into(), toml::Value::Boolean(true));
 
     let mut model_providers = toml::map::Map::new();
     model_providers.insert("llmproxy".into(), toml::Value::Table(provider));
-    table.insert("model_providers".into(), toml::Value::Table(model_providers));
+    table.insert(
+        "model_providers".into(),
+        toml::Value::Table(model_providers),
+    );
 
-    std::fs::write(&path,
-        toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        &path,
+        toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn apply_gemini(model: &str) -> Result<(), String> {
@@ -387,8 +407,11 @@ fn apply_gemini(model: &str) -> Result<(), String> {
     json["apiEndpoint"] = serde_json::Value::String("http://localhost:8080/gemini".into());
     json["model"] = serde_json::Value::String(model.into());
 
-    std::fs::write(&path, serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -403,28 +426,34 @@ fn reset_agent_config(agent: String) -> Result<(), String> {
 
 fn reset_claude_code() -> Result<(), String> {
     let path = home_dir().join(".claude").join("settings.json");
-    if !path.exists() { return Ok(()); }
+    if !path.exists() {
+        return Ok(());
+    }
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut json: serde_json::Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let mut json: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
     if let Some(env) = json["env"].as_object_mut() {
         env.remove("ANTHROPIC_BASE_URL");
         env.remove("ANTHROPIC_API_KEY");
     }
     json.as_object_mut().map(|o| o.remove("model"));
-    std::fs::write(&path, serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn reset_codex() -> Result<(), String> {
     let path = home_dir().join(".codex").join("config.toml");
-    if !path.exists() { return Ok(()); }
+    if !path.exists() {
+        return Ok(());
+    }
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut table: toml::map::Map<String, toml::Value> =
-        match toml::from_str::<toml::Value>(&raw) {
-            Ok(toml::Value::Table(t)) => t,
-            _ => return Ok(()),
-        };
+    let mut table: toml::map::Map<String, toml::Value> = match toml::from_str::<toml::Value>(&raw) {
+        Ok(toml::Value::Table(t)) => t,
+        _ => return Ok(()),
+    };
     table.remove("model_provider");
     table.remove("model");
     table.remove("api_key");
@@ -435,21 +464,28 @@ fn reset_codex() -> Result<(), String> {
             table.remove("model_providers");
         }
     }
-    std::fs::write(&path,
-        toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        &path,
+        toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn reset_gemini() -> Result<(), String> {
     let path = home_dir().join(".gemini").join("settings.json");
-    if !path.exists() { return Ok(()); }
+    if !path.exists() {
+        return Ok(());
+    }
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut json: serde_json::Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let mut json: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
     if let Some(o) = json.as_object_mut() {
         o.remove("apiEndpoint");
         o.remove("model");
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }

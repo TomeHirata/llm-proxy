@@ -458,8 +458,18 @@ async fn responses_cross_provider(
                 let ct = resp.usage.as_ref().map(|u| u.completion_tokens as i64);
                 let tt = resp.usage.as_ref().map(|u| u.total_tokens as i64);
                 record_raw(
-                    &state, &provider_name, &model_id, 200, started, false,
-                    &request_body_str, &body_out, pt, ct, tt, None,
+                    &state,
+                    &provider_name,
+                    &model_id,
+                    200,
+                    started,
+                    false,
+                    &request_body_str,
+                    &body_out,
+                    pt,
+                    ct,
+                    tt,
+                    None,
                 );
                 Response::builder()
                     .header("content-type", "application/json")
@@ -469,8 +479,18 @@ async fn responses_cross_provider(
             Err(e) => {
                 let status = error_status(&e);
                 record_raw(
-                    &state, &provider_name, &model_id, status, started, false,
-                    &request_body_str, "", None, None, None, Some(e.to_string()),
+                    &state,
+                    &provider_name,
+                    &model_id,
+                    status,
+                    started,
+                    false,
+                    &request_body_str,
+                    "",
+                    None,
+                    None,
+                    None,
+                    Some(e.to_string()),
                 );
                 proxy_error_to_response(&e)
             }
@@ -823,8 +843,18 @@ async fn anthropic_cross_provider(
                 let ct = resp.usage.as_ref().map(|u| u.completion_tokens as i64);
                 let tt = resp.usage.as_ref().map(|u| u.total_tokens as i64);
                 record_raw(
-                    &state, &provider_name, &model_id, 200, started, false,
-                    &request_body_str, &body_out, pt, ct, tt, None,
+                    &state,
+                    &provider_name,
+                    &model_id,
+                    200,
+                    started,
+                    false,
+                    &request_body_str,
+                    &body_out,
+                    pt,
+                    ct,
+                    tt,
+                    None,
                 );
                 Response::builder()
                     .header("content-type", "application/json")
@@ -834,8 +864,18 @@ async fn anthropic_cross_provider(
             Err(e) => {
                 let status = error_status(&e);
                 record_raw(
-                    &state, &provider_name, &model_id, status, started, false,
-                    &request_body_str, "", None, None, None, Some(e.to_string()),
+                    &state,
+                    &provider_name,
+                    &model_id,
+                    status,
+                    started,
+                    false,
+                    &request_body_str,
+                    "",
+                    None,
+                    None,
+                    None,
+                    Some(e.to_string()),
                 );
                 proxy_error_to_response(&e)
             }
@@ -922,8 +962,18 @@ async fn gemini_cross_provider(
                 let ct = resp.usage.as_ref().map(|u| u.completion_tokens as i64);
                 let tt = resp.usage.as_ref().map(|u| u.total_tokens as i64);
                 record_raw(
-                    &state, &provider_name, &model_id, 200, started, false,
-                    &request_body_str, &body_out, pt, ct, tt, None,
+                    &state,
+                    &provider_name,
+                    &model_id,
+                    200,
+                    started,
+                    false,
+                    &request_body_str,
+                    &body_out,
+                    pt,
+                    ct,
+                    tt,
+                    None,
                 );
                 Response::builder()
                     .header("content-type", "application/json")
@@ -933,8 +983,18 @@ async fn gemini_cross_provider(
             Err(e) => {
                 let status = error_status(&e);
                 record_raw(
-                    &state, &provider_name, &model_id, status, started, false,
-                    &request_body_str, "", None, None, None, Some(e.to_string()),
+                    &state,
+                    &provider_name,
+                    &model_id,
+                    status,
+                    started,
+                    false,
+                    &request_body_str,
+                    "",
+                    None,
+                    None,
+                    None,
+                    Some(e.to_string()),
                 );
                 proxy_error_to_response(&e)
             }

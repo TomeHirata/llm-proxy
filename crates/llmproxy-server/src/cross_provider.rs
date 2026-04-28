@@ -170,9 +170,7 @@ impl AnthropicStreamAdapter {
             let Ok(v) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
-            let delta = v["choices"][0]["delta"]["content"]
-                .as_str()
-                .unwrap_or("");
+            let delta = v["choices"][0]["delta"]["content"].as_str().unwrap_or("");
             let finish = v["choices"][0]["finish_reason"]
                 .as_str()
                 .filter(|s| !s.is_empty() && *s != "null");
@@ -198,7 +196,11 @@ impl AnthropicStreamAdapter {
                         out.push(self.msg_start());
                         out.push(self.block_start());
                     }
-                    let stop = if reason == "length" { "max_tokens" } else { "end_turn" };
+                    let stop = if reason == "length" {
+                        "max_tokens"
+                    } else {
+                        "end_turn"
+                    };
                     out.extend(self.close(stop));
                 }
             }
@@ -290,7 +292,11 @@ pub fn gemini_to_chat_request(model: &str, body: &[u8]) -> Result<ChatRequest, P
     }
 
     for c in v["contents"].as_array().unwrap_or(&vec![]) {
-        let role = if c["role"].as_str() == Some("model") { "assistant" } else { "user" };
+        let role = if c["role"].as_str() == Some("model") {
+            "assistant"
+        } else {
+            "user"
+        };
         let text: String = c["parts"]
             .as_array()
             .map(|ps| {
@@ -389,9 +395,7 @@ impl GeminiStreamAdapter {
             let Ok(v) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
-            let delta = v["choices"][0]["delta"]["content"]
-                .as_str()
-                .unwrap_or("");
+            let delta = v["choices"][0]["delta"]["content"].as_str().unwrap_or("");
             let finish = v["choices"][0]["finish_reason"]
                 .as_str()
                 .filter(|s| !s.is_empty() && *s != "null");
