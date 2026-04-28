@@ -452,7 +452,10 @@ pub fn responses_to_chat_request(body: &[u8]) -> Result<ChatRequest, ProxyError>
                     Value::Array(parts) => parts
                         .iter()
                         .filter_map(|p| {
-                            if matches!(p["type"].as_str(), Some("input_text") | Some("text") | Some("output_text")) {
+                            if matches!(
+                                p["type"].as_str(),
+                                Some("input_text") | Some("text") | Some("output_text")
+                            ) {
                                 p["text"].as_str().map(str::to_string)
                             } else {
                                 None

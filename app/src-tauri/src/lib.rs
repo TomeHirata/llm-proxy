@@ -210,54 +210,92 @@ fn read_claude_code_status() -> AgentStatus {
     let path = home_dir().join(".claude").join("settings.json");
     let config_path = path.to_string_lossy().to_string();
     if !path.exists() {
-        return AgentStatus { config_path, config_exists: false, active: false, model: String::new() };
+        return AgentStatus {
+            config_path,
+            config_exists: false,
+            active: false,
+            model: String::new(),
+        };
     }
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
     let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-    let active = json["env"]["ANTHROPIC_BASE_URL"].as_str()
-        == Some("http://localhost:8080/anthropic");
+    let active =
+        json["env"]["ANTHROPIC_BASE_URL"].as_str() == Some("http://localhost:8080/anthropic");
     let model = json["model"].as_str().unwrap_or("").to_string();
-    AgentStatus { config_path, config_exists: true, active, model }
+    AgentStatus {
+        config_path,
+        config_exists: true,
+        active,
+        model,
+    }
 }
 
 fn read_codex_status() -> AgentStatus {
     let path = home_dir().join(".codex").join("config.toml");
     let config_path = path.to_string_lossy().to_string();
     if !path.exists() {
-        return AgentStatus { config_path, config_exists: false, active: false, model: String::new() };
+        return AgentStatus {
+            config_path,
+            config_exists: false,
+            active: false,
+            model: String::new(),
+        };
     }
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
-    let val: toml::Value = toml::from_str(&raw)
-        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
+    let val: toml::Value =
+        toml::from_str(&raw).unwrap_or(toml::Value::Table(toml::map::Map::new()));
     let active = val
-        .get("model_providers").and_then(|mp| mp.get("llmproxy"))
-        .and_then(|p| p.get("base_url")).and_then(|v| v.as_str())
+        .get("model_providers")
+        .and_then(|mp| mp.get("llmproxy"))
+        .and_then(|p| p.get("base_url"))
+        .and_then(|v| v.as_str())
         == Some("http://localhost:8080/openai/v1");
-    let model = val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    AgentStatus { config_path, config_exists: true, active, model }
+    let model = val
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    AgentStatus {
+        config_path,
+        config_exists: true,
+        active,
+        model,
+    }
 }
 
 fn read_gemini_status() -> AgentStatus {
     let path = home_dir().join(".gemini").join("settings.json");
     let config_path = path.to_string_lossy().to_string();
     if !path.exists() {
-        return AgentStatus { config_path, config_exists: false, active: false, model: String::new() };
+        return AgentStatus {
+            config_path,
+            config_exists: false,
+            active: false,
+            model: String::new(),
+        };
     }
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
     let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
     let active = json["apiEndpoint"].as_str() == Some("http://localhost:8080/gemini");
-    let model = json["model"].as_str()
+    let model = json["model"]
+        .as_str()
         .or_else(|| json["model"]["name"].as_str())
-        .unwrap_or("").to_string();
-    AgentStatus { config_path, config_exists: true, active, model }
+        .unwrap_or("")
+        .to_string();
+    AgentStatus {
+        config_path,
+        config_exists: true,
+        active,
+        model,
+    }
 }
 
 #[tauri::command]
 fn read_agent_configs() -> serde_json::Value {
     serde_json::json!({
         "claude_code": read_claude_code_status(),
-        "codex":       read_codex_status(),
-        "gemini":      read_gemini_status(),
+        "codex": read_codex_status(),
+        "gemini": read_gemini_status(),
     })
 }
 
@@ -265,9 +303,9 @@ fn read_agent_configs() -> serde_json::Value {
 fn apply_agent_config(agent: String, model: String) -> Result<(), String> {
     match agent.as_str() {
         "claude_code" => apply_claude_code(&model),
-        "codex"       => apply_codex(&model),
-        "gemini"      => apply_gemini(&model),
-        _             => Err(format!("unknown agent: {agent}")),
+        "codex" => apply_codex(&model),
+        "gemini" => apply_gemini(&model),
+        _ => Err(format!("unknown agent: {agent}")),
     }
 }
 
@@ -357,9 +395,9 @@ fn apply_gemini(model: &str) -> Result<(), String> {
 fn reset_agent_config(agent: String) -> Result<(), String> {
     match agent.as_str() {
         "claude_code" => reset_claude_code(),
-        "codex"       => reset_codex(),
-        "gemini"      => reset_gemini(),
-        _             => Err(format!("unknown agent: {agent}")),
+        "codex" => reset_codex(),
+        "gemini" => reset_gemini(),
+        _ => Err(format!("unknown agent: {agent}")),
     }
 }
 

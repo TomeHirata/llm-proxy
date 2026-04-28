@@ -404,11 +404,10 @@ async fn responses_cross_provider(
 
     // Use None for auth so the registry uses the configured provider credential,
     // not the proxy-internal key Codex sends (e.g. "llmproxy").
-    let (provider, model_id, cred) =
-        match state.registry.resolve(&canonical_model, None) {
-            Ok(r) => r,
-            Err(e) => return proxy_error_to_response(&e),
-        };
+    let (provider, model_id, cred) = match state.registry.resolve(&canonical_model, None) {
+        Ok(r) => r,
+        Err(e) => return proxy_error_to_response(&e),
+    };
 
     let provider_name = canonical_model
         .split_once('/')
@@ -505,7 +504,10 @@ async fn anthropic_messages_handler(
     let (model_id, body) = match serde_json::from_str::<serde_json::Value>(&request_body_str) {
         Ok(mut json) if json["model"].is_string() => {
             let raw = json["model"].as_str().unwrap_or("").to_string();
-            let stripped = raw.find('/').map(|i| raw[i + 1..].to_string()).unwrap_or(raw.clone());
+            let stripped = raw
+                .find('/')
+                .map(|i| raw[i + 1..].to_string())
+                .unwrap_or(raw.clone());
             if stripped != raw {
                 json["model"] = serde_json::Value::String(stripped.clone());
                 let new_body = serde_json::to_vec(&json).unwrap_or_else(|_| body.to_vec());
@@ -767,11 +769,10 @@ async fn anthropic_cross_provider(
 
     // Use None so the registry uses the configured provider credential,
     // not the proxy-internal key Claude Code sends (e.g. "llmproxy").
-    let (provider, model_id, cred) =
-        match state.registry.resolve(&canonical_model, None) {
-            Ok(r) => r,
-            Err(e) => return proxy_error_to_response(&e),
-        };
+    let (provider, model_id, cred) = match state.registry.resolve(&canonical_model, None) {
+        Ok(r) => r,
+        Err(e) => return proxy_error_to_response(&e),
+    };
 
     let provider_name = canonical_model
         .split_once('/')
@@ -868,11 +869,10 @@ async fn gemini_cross_provider(
 
     // Use None so the registry uses the configured provider credential,
     // not the proxy-internal key Gemini CLI sends.
-    let (provider, model_id, cred) =
-        match state.registry.resolve(&canonical_model, None) {
-            Ok(r) => r,
-            Err(e) => return proxy_error_to_response(&e),
-        };
+    let (provider, model_id, cred) = match state.registry.resolve(&canonical_model, None) {
+        Ok(r) => r,
+        Err(e) => return proxy_error_to_response(&e),
+    };
 
     let provider_name = canonical_model
         .split_once('/')
