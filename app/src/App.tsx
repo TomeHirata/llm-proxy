@@ -124,7 +124,7 @@ export default function App() {
             configuredProviders={status?.configured_providers ?? []}
           />
         )}
-        {tab === "agents" && <AgentsTab />}
+        {tab === "agents" && <AgentsTab configuredProviders={status?.configured_providers ?? []} />}
         {tab === "chat" && (
           <ChatTab
             proxyOnline={proxyOnline}

@@ -16,14 +16,28 @@ interface AllAgentConfigs {
   gemini: AgentStatus;
 }
 
+interface Props {
+  configuredProviders: string[];
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  gemini: "Gemini",
+  mistral: "Mistral",
+  togetherai: "TogetherAI",
+  bedrock: "AWS Bedrock",
+  azure: "Azure OpenAI",
+};
+
 const AGENTS = [
   {
     key: "claude_code" as const,
     name: "Claude Code",
     description: "Anthropic's official coding agent CLI",
     baseUrl: "http://localhost:8080/anthropic",
-    defaultModel: "anthropic/claude-sonnet-4-6",
-    modelHint: "provider/model (e.g. anthropic/claude-sonnet-4-6, openai/gpt-4o)",
+    defaultProvider: "anthropic",
+    defaultModel: "claude-sonnet-4-6",
     logoImg: claudeCodeLogo,
     logo: null,
     logoColor: "",
@@ -33,8 +47,8 @@ const AGENTS = [
     name: "OpenAI Codex CLI",
     description: "OpenAI's terminal coding agent",
     baseUrl: "http://localhost:8080/openai/v1",
-    defaultModel: "openai/gpt-4o",
-    modelHint: "provider/model (e.g. openai/gpt-4o, anthropic/claude-sonnet-4-6)",
+    defaultProvider: "openai",
+    defaultModel: "gpt-4o",
     logoImg: codexLogo,
     logo: null,
     logoColor: "",
@@ -44,8 +58,8 @@ const AGENTS = [
     name: "Gemini CLI",
     description: "Google's Gemini coding agent CLI",
     baseUrl: "http://localhost:8080/gemini",
-    defaultModel: "gemini/gemini-2.5-flash",
-    modelHint: "provider/model (e.g. gemini/gemini-2.5-flash, anthropic/claude-sonnet-4-6)",
+    defaultProvider: "gemini",
+    defaultModel: "gemini-2.5-flash",
     logoImg: null,
     logo: "✦",
     logoColor: "text-blue-500",
@@ -54,9 +68,20 @@ const AGENTS = [
 
 type AgentKey = (typeof AGENTS)[number]["key"];
 
-export default function AgentsTab() {
+function splitModel(full: string, defaultProvider: string): { provider: string; modelId: string } {
+  const idx = full.indexOf("/");
+  if (idx === -1) return { provider: defaultProvider, modelId: full };
+  return { provider: full.slice(0, idx), modelId: full.slice(idx + 1) };
+}
+
+export default function AgentsTab({ configuredProviders }: Props) {
   const [configs, setConfigs] = useState<AllAgentConfigs | null>(null);
-  const [models, setModels] = useState<Record<AgentKey, string>>({
+  const [providers, setProviders] = useState<Record<AgentKey, string>>({
+    claude_code: "",
+    codex: "",
+    gemini: "",
+  });
+  const [modelIds, setModelIds] = useState<Record<AgentKey, string>>({
     claude_code: "",
     codex: "",
     gemini: "",
@@ -72,11 +97,22 @@ export default function AgentsTab() {
     try {
       const result = await invoke<AllAgentConfigs>("read_agent_configs");
       setConfigs(result);
-      setModels((prev) => {
+      setProviders((prev) => {
         const next = { ...prev };
         for (const agent of AGENTS) {
           if (!prev[agent.key]) {
-            next[agent.key] = result[agent.key].model || agent.defaultModel;
+            const full = result[agent.key].model || `${agent.defaultProvider}/${agent.defaultModel}`;
+            next[agent.key] = splitModel(full, agent.defaultProvider).provider;
+          }
+        }
+        return next;
+      });
+      setModelIds((prev) => {
+        const next = { ...prev };
+        for (const agent of AGENTS) {
+          if (!prev[agent.key]) {
+            const full = result[agent.key].model || `${agent.defaultProvider}/${agent.defaultModel}`;
+            next[agent.key] = splitModel(full, agent.defaultProvider).modelId;
           }
         }
         return next;
@@ -89,10 +125,11 @@ export default function AgentsTab() {
   useEffect(() => { refresh(); }, [refresh]);
 
   const apply = async (key: AgentKey) => {
+    const model = `${providers[key]}/${modelIds[key]}`.trim();
     setBusy(key);
     setErrors((e) => ({ ...e, [key]: "" }));
     try {
-      await invoke("apply_agent_config", { agent: key, model: models[key] });
+      await invoke("apply_agent_config", { agent: key, model });
       await refresh();
     } catch (e) {
       setErrors((prev) => ({ ...prev, [key]: String(e) }));
@@ -113,6 +150,8 @@ export default function AgentsTab() {
       setBusy(null);
     }
   };
+
+  const providerOptions = configuredProviders.length > 0 ? configuredProviders : Object.keys(PROVIDER_LABELS);
 
   return (
     <div className="p-5 max-w-2xl space-y-4">
@@ -178,26 +217,32 @@ export default function AgentsTab() {
               </div>
             )}
 
-            {/* Model input + actions */}
-            <div className="flex items-center gap-2">
+            {/* Provider + model inputs */}
+            <div className="flex items-start gap-2">
+              <select
+                className="text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300 flex-shrink-0"
+                value={providers[agent.key]}
+                onChange={(e) => setProviders((prev) => ({ ...prev, [agent.key]: e.target.value }))}
+              >
+                {providerOptions.map((p) => (
+                  <option key={p} value={p}>{PROVIDER_LABELS[p] ?? p}</option>
+                ))}
+              </select>
               <div className="flex-1">
                 <input
                   type="text"
                   className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
                   placeholder={agent.defaultModel}
-                  value={models[agent.key]}
+                  value={modelIds[agent.key]}
                   onChange={(e) =>
-                    setModels((prev) => ({ ...prev, [agent.key]: e.target.value }))
+                    setModelIds((prev) => ({ ...prev, [agent.key]: e.target.value }))
                   }
                 />
-                <p className="text-[11px] text-gray-400 mt-0.5 px-0.5">
-                  {agent.modelHint}
-                </p>
               </div>
-              <div className="flex gap-2 self-start mt-0.5">
+              <div className="flex gap-2 flex-shrink-0">
                 <button
                   onClick={() => apply(agent.key)}
-                  disabled={isBusy || !models[agent.key].trim()}
+                  disabled={isBusy || !modelIds[agent.key].trim()}
                   className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                 >
                   {isBusy ? "Saving…" : "Apply"}
