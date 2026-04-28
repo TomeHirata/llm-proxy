@@ -5,8 +5,9 @@ import UsageTab from "./components/UsageTab";
 import ProvidersTab from "./components/ProvidersTab";
 import SettingsTab from "./components/SettingsTab";
 import ChatTab from "./components/ChatTab";
+import AgentsTab from "./components/AgentsTab";
 
-type Tab = "usage" | "providers" | "settings" | "chat";
+type Tab = "usage" | "providers" | "agents" | "chat" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("usage");
@@ -48,6 +49,7 @@ export default function App() {
   const tabs: { key: Tab; label: string }[] = [
     { key: "usage", label: "Usage" },
     { key: "providers", label: "Providers" },
+    { key: "agents", label: "Agents" },
     { key: "chat", label: "Chat" },
     { key: "settings", label: "Settings" },
   ];
@@ -122,6 +124,7 @@ export default function App() {
             configuredProviders={status?.configured_providers ?? []}
           />
         )}
+        {tab === "agents" && <AgentsTab />}
         {tab === "chat" && (
           <ChatTab
             proxyOnline={proxyOnline}
