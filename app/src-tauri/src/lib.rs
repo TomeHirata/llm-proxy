@@ -314,6 +314,7 @@ fn apply_codex(model: &str) -> Result<(), String> {
     table.insert("model".into(), toml::Value::String(model.into()));
     table.insert("openai_base_url".into(),
         toml::Value::String("http://localhost:8080/openai".into()));
+    table.insert("api_key".into(), toml::Value::String("llmproxy".into()));
 
     std::fs::write(&path,
         toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?)
@@ -374,6 +375,7 @@ fn reset_codex() -> Result<(), String> {
         };
     table.remove("model");
     table.remove("openai_base_url");
+    table.remove("api_key");
     std::fs::write(&path,
         toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())
