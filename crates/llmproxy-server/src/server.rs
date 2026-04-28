@@ -69,6 +69,16 @@ pub fn router(state: AppState) -> Router {
             "/gemini/v1beta/models/:_provider/:model_id/generateContent",
             post(gemini_canonical_handler),
         )
+        // Colon notation: model:generateContent and model:streamGenerateContent
+        // (the Google AI SDK sends these as a single path segment).
+        .route(
+            "/gemini/v1beta/models/:model_method",
+            post(gemini_colon_handler),
+        )
+        .route(
+            "/gemini/v1beta/models/:provider/:model_method",
+            post(gemini_canonical_colon_handler),
+        )
         .merge(admin_routes())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -762,6 +772,65 @@ async fn gemini_canonical_handler(
         gemini_generate_content_handler(State(state), Path(model_id), headers, body).await
     } else {
         // Cross-provider: translate Gemini request → route to any provider.
+        let canonical = format!("{provider}/{model_id}");
+        gemini_cross_provider(state, headers, query, body, canonical).await
+    }
+}
+
+// Handles colon-notation: /gemini/v1beta/models/gemini-2.5-flash:generateContent
+// The Google AI SDK sends method as part of the last path segment (colon notation).
+async fn gemini_colon_handler(
+    State(state): State<AppState>,
+    Path(model_method): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let cred = match state.registry.credential_for("gemini", auth.as_deref()) {
+        Ok(c) => c,
+        Err(e) => return proxy_error_to_response(&e),
+    };
+    let token = match cred {
+        llmproxy_core::provider::Credential::BearerToken(t) => t,
+        _ => {
+            return proxy_error_to_response(&ProxyError::Config(
+                "gemini requires a bearer token".into(),
+            ))
+        }
+    };
+    let mut url =
+        reqwest::Url::parse("https://generativelanguage.googleapis.com/v1beta/models/").unwrap();
+    url.path_segments_mut().unwrap().push(&model_method);
+    url.query_pairs_mut().append_pair("key", &token);
+    native_forward(
+        &state.http,
+        url,
+        &headers,
+        reqwest::header::HeaderMap::new(),
+        body,
+    )
+    .await
+}
+
+// Handles colon-notation with provider prefix: /gemini/v1beta/models/gemini/gemini-2.5-flash:generateContent
+async fn gemini_canonical_colon_handler(
+    State(state): State<AppState>,
+    Path((provider, model_method)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if provider == "gemini" {
+        gemini_colon_handler(State(state), Path(model_method), headers, body).await
+    } else {
+        let model_id = model_method
+            .split(':')
+            .next()
+            .unwrap_or(&model_method)
+            .to_string();
         let canonical = format!("{provider}/{model_id}");
         gemini_cross_provider(state, headers, query, body, canonical).await
     }
