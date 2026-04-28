@@ -277,11 +277,7 @@ fn read_gemini_status() -> AgentStatus {
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
     let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
     let active = json["apiEndpoint"].as_str() == Some("http://localhost:8080/gemini");
-    let model = json["model"]
-        .as_str()
-        .or_else(|| json["model"]["name"].as_str())
-        .unwrap_or("")
-        .to_string();
+    let model = json["model"]["name"].as_str().unwrap_or("").to_string();
     AgentStatus {
         config_path,
         config_exists: true,
@@ -417,7 +413,7 @@ fn apply_gemini(model: &str) -> Result<(), String> {
     };
 
     json["apiEndpoint"] = serde_json::Value::String("http://localhost:8080/gemini".into());
-    json["model"] = serde_json::Value::String(model.into());
+    json["model"] = serde_json::json!({ "name": model });
 
     std::fs::write(
         &path,
