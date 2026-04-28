@@ -218,9 +218,9 @@ export default function AgentsTab({ configuredProviders }: Props) {
             )}
 
             {/* Provider + model inputs */}
-            <div className="flex items-start gap-2">
+            <div className="flex items-center gap-2">
               <select
-                className="text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300 flex-shrink-0"
+                className="text-sm border border-gray-200 rounded-lg px-2 py-[7px] bg-white focus:outline-none focus:ring-1 focus:ring-blue-300 flex-shrink-0 h-[34px]"
                 value={providers[agent.key]}
                 onChange={(e) => setProviders((prev) => ({ ...prev, [agent.key]: e.target.value }))}
               >
@@ -231,7 +231,7 @@ export default function AgentsTab({ configuredProviders }: Props) {
               <div className="flex-1">
                 <input
                   type="text"
-                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-[7px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-300 h-[34px]"
                   placeholder={agent.defaultModel}
                   value={modelIds[agent.key]}
                   onChange={(e) =>
@@ -243,7 +243,7 @@ export default function AgentsTab({ configuredProviders }: Props) {
                 <button
                   onClick={() => apply(agent.key)}
                   disabled={isBusy || !modelIds[agent.key].trim()}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                  className="px-3 py-[7px] rounded-lg text-xs font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap h-[34px]"
                 >
                   {isBusy ? "Saving…" : "Apply"}
                 </button>
@@ -251,7 +251,7 @@ export default function AgentsTab({ configuredProviders }: Props) {
                   <button
                     onClick={() => reset(agent.key)}
                     disabled={isBusy}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium text-red-500 bg-red-50 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="px-3 py-[7px] rounded-lg text-xs font-medium text-red-500 bg-red-50 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed h-[34px]"
                   >
                     Reset
                   </button>
