@@ -336,15 +336,15 @@ fn apply_claude_code(model: &str) -> Result<(), String> {
     );
     env_map.insert(
         "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
-        serde_json::Value::String("claude-haiku-4-5-20251001".into()),
+        serde_json::Value::String(model.into()),
     );
     env_map.insert(
         "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
-        serde_json::Value::String("claude-sonnet-4-6".into()),
+        serde_json::Value::String(model.into()),
     );
     env_map.insert(
         "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
-        serde_json::Value::String("claude-opus-4-7".into()),
+        serde_json::Value::String(model.into()),
     );
     json["env"] = serde_json::Value::Object(env_map);
     json["model"] = serde_json::Value::String(model.into());
