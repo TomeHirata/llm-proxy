@@ -316,7 +316,7 @@ pub fn gemini_to_chat_request(model: &str, body: &[u8]) -> Result<ChatRequest, P
         stream: None,
         temperature: gc["temperature"].as_f64().map(|f| f as f32),
         max_tokens: gc["maxOutputTokens"].as_u64().map(|n| n as u32),
-        top_p: gc["topP"].as_f64().map(|f| f as f32),
+        top_p: None,
         stop: gc.get("stopSequences").cloned(),
         tools: None,
         tool_choice: None,
