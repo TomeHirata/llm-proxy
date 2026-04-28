@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import claudeCodeLogo from "../assets/claude-code-logo.png";
+import codexLogo from "../assets/codex-logo.png";
 
 interface AgentStatus {
   config_path: string;
@@ -22,8 +24,9 @@ const AGENTS = [
     baseUrl: "http://localhost:8080/anthropic",
     defaultModel: "anthropic/claude-sonnet-4-6",
     modelHint: "provider/model (e.g. anthropic/claude-sonnet-4-6, openai/gpt-4o)",
-    logo: "◆",
-    logoColor: "text-orange-500",
+    logoImg: claudeCodeLogo,
+    logo: null,
+    logoColor: "",
   },
   {
     key: "codex" as const,
@@ -32,8 +35,9 @@ const AGENTS = [
     baseUrl: "http://localhost:8080/openai/v1",
     defaultModel: "openai/gpt-4o",
     modelHint: "provider/model (e.g. openai/gpt-4o, anthropic/claude-sonnet-4-6)",
-    logo: "◎",
-    logoColor: "text-green-600",
+    logoImg: codexLogo,
+    logo: null,
+    logoColor: "",
   },
   {
     key: "gemini" as const,
@@ -42,6 +46,7 @@ const AGENTS = [
     baseUrl: "http://localhost:8080/gemini",
     defaultModel: "gemini/gemini-2.0-flash",
     modelHint: "provider/model (e.g. gemini/gemini-2.0-flash, anthropic/claude-sonnet-4-6)",
+    logoImg: null,
     logo: "✦",
     logoColor: "text-blue-500",
   },
@@ -131,9 +136,13 @@ export default function AgentsTab() {
             {/* Header */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className={`text-xl leading-none ${agent.logoColor}`}>
-                  {agent.logo}
-                </span>
+                {agent.logoImg ? (
+                  <img src={agent.logoImg} alt={agent.name} className="w-5 h-5 object-contain" />
+                ) : (
+                  <span className={`text-xl leading-none ${agent.logoColor}`}>
+                    {agent.logo}
+                  </span>
+                )}
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-gray-800 text-sm">
