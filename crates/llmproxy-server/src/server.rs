@@ -63,6 +63,11 @@ pub fn router(state: AppState) -> Router {
             "/gemini/v1beta/models/:model_id/generateContent",
             post(gemini_generate_content_handler),
         )
+        // Canonical provider/model format: strip the provider prefix and route as normal.
+        .route(
+            "/gemini/v1beta/models/:_provider/:model_id/generateContent",
+            post(gemini_canonical_handler),
+        )
         .merge(admin_routes())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -354,10 +359,23 @@ async fn anthropic_messages_handler(
 ) -> Response {
     let started = Instant::now();
     let request_body_str = String::from_utf8_lossy(&body).into_owned();
-    let model_id = serde_json::from_str::<serde_json::Value>(&request_body_str)
-        .ok()
-        .and_then(|v| v["model"].as_str().map(|s| s.to_string()))
-        .unwrap_or_default();
+
+    // Strip canonical provider/ prefix (e.g. "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6")
+    // so the model ID forwarded to Anthropic's API is always a bare model name.
+    let (model_id, body) = match serde_json::from_str::<serde_json::Value>(&request_body_str) {
+        Ok(mut json) if json["model"].is_string() => {
+            let raw = json["model"].as_str().unwrap_or("").to_string();
+            let stripped = raw.find('/').map(|i| raw[i + 1..].to_string()).unwrap_or(raw.clone());
+            if stripped != raw {
+                json["model"] = serde_json::Value::String(stripped.clone());
+                let new_body = serde_json::to_vec(&json).unwrap_or_else(|_| body.to_vec());
+                (stripped, Bytes::from(new_body))
+            } else {
+                (raw, body)
+            }
+        }
+        _ => (String::new(), body),
+    };
 
     let auth = headers
         .get("authorization")
@@ -567,6 +585,16 @@ async fn gemini_generate_content_handler(
         body,
     )
     .await
+}
+
+// Handles canonical "provider/model" format: /gemini/v1beta/models/:_provider/:model_id/generateContent
+async fn gemini_canonical_handler(
+    State(state): State<AppState>,
+    Path((_provider, model_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    gemini_generate_content_handler(State(state), Path(model_id), headers, body).await
 }
 
 fn proxy_error_to_response(err: &ProxyError) -> Response {
