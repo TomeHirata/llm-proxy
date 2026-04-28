@@ -1225,8 +1225,6 @@ struct FinalizedStream<S> {
     /// True if the server ever emitted a synthesized error chunk for this
     /// stream (upstream yielded `Err`).
     saw_error: bool,
-    /// True if we saw the terminating `data: [DONE]` marker.
-    saw_done: bool,
     finalizer: Option<StreamFinalizer>,
 }
 
@@ -1237,7 +1235,6 @@ impl<S> FinalizedStream<S> {
             buf: Vec::new(),
             dropped_bytes: 0,
             saw_error: false,
-            saw_done: false,
             finalizer: Some(finalizer),
         }
     }
@@ -1275,19 +1272,12 @@ impl<S> Drop for FinalizedStream<S> {
             SseFormat::OpenAI => last_usage_from_sse(&assembled),
             SseFormat::Anthropic => last_usage_from_anthropic_sse(&assembled),
         };
-        let done_marker = match f.sse_format {
-            SseFormat::OpenAI => "data: [DONE]",
-            SseFormat::Anthropic => "message_stop event",
-        };
-
         let (status, error) = if self.saw_error {
             (502, Some("upstream stream error".into()))
-        } else if !self.saw_done {
-            (
-                499,
-                Some(format!("client disconnected before {done_marker}")),
-            )
         } else {
+            // Treat streams that end cleanly without [DONE] as successful —
+            // some providers (e.g. Databricks) close the connection without
+            // sending the sentinel.
             (200, None)
         };
 
@@ -1326,21 +1316,6 @@ where
             let s = std::str::from_utf8(b).unwrap_or("");
             if s.contains("\"error\":") {
                 self.saw_error = true;
-            }
-            let saw_done = match self.finalizer.as_ref().map(|f| f.sse_format) {
-                Some(SseFormat::Anthropic) => s.lines().any(|line| {
-                    let Some(rest) = line.strip_prefix("data:") else {
-                        return false;
-                    };
-                    serde_json::from_str::<serde_json::Value>(rest.trim())
-                        .ok()
-                        .and_then(|v| v["type"].as_str().map(|t| t == "message_stop"))
-                        .unwrap_or(false)
-                }),
-                _ => s.contains("data: [DONE]"),
-            };
-            if saw_done {
-                self.saw_done = true;
             }
             let chunk = b.clone();
             self.absorb(&chunk);
