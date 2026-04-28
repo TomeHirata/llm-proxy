@@ -6,6 +6,11 @@ const ALL_PROVIDERS = [
   { name: "openai", label: "OpenAI", fields: ["api_key"] },
   { name: "anthropic", label: "Anthropic", fields: ["api_key"] },
   { name: "gemini", label: "Gemini", fields: ["api_key"] },
+  {
+    name: "databricks",
+    label: "Databricks",
+    fields: ["endpoint", "api_key"],
+  },
   { name: "mistral", label: "Mistral", fields: ["api_key"] },
   { name: "togetherai", label: "TogetherAI", fields: ["api_key"] },
   {

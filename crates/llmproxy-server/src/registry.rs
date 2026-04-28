@@ -43,6 +43,16 @@ impl ProviderRegistry {
             }
         }
 
+        // Databricks requires a workspace URL (endpoint); registered when present.
+        if let Some(p) = cfg.providers.get("databricks") {
+            if let Some(endpoint) = &p.endpoint {
+                providers.insert(
+                    "databricks".into(),
+                    Arc::new(PassthroughProvider::databricks(endpoint.clone())),
+                );
+            }
+        }
+
         for (name, p) in &cfg.providers {
             if let Some(cred) = provider_credential(name, p) {
                 config_creds.insert(name.clone(), cred);
@@ -207,6 +217,7 @@ fn env_key_for(provider_name: &str) -> Option<&'static str> {
         "cohere" => Some("COHERE_API_KEY"),
         "togetherai" => Some("TOGETHERAI_API_KEY"),
         "azure" => Some("AZURE_OPENAI_API_KEY"),
+        "databricks" => Some("DATABRICKS_TOKEN"),
         _ => None,
     }
 }

@@ -60,6 +60,15 @@ impl PassthroughProvider {
         Self::new("https://api.together.xyz/v1", AuthHeader::Bearer)
     }
 
+    /// Databricks Model Serving — endpoint is the workspace URL
+    /// (e.g. `https://my-workspace.azuredatabricks.net`). The chat completions
+    /// path is appended automatically.
+    pub fn databricks(workspace_url: impl Into<String>) -> Self {
+        let url: String = workspace_url.into();
+        let url = url.trim_end_matches('/');
+        Self::new(format!("{url}/serving-endpoints/v1"), AuthHeader::Bearer)
+    }
+
     /// Azure OpenAI — endpoint like `https://my-resource.openai.azure.com` with
     /// a specific `api_version` query param. The model field in the request is
     /// treated as the deployment name.
