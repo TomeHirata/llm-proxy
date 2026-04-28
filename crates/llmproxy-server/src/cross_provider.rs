@@ -427,6 +427,289 @@ impl GeminiStreamAdapter {
     }
 }
 
+// ─── OpenAI Responses API ↔ OpenAI Chat ───────────────────────────────────
+
+/// Parse an OpenAI Responses API `/v1/responses` request body into a `ChatRequest`.
+pub fn responses_to_chat_request(body: &[u8]) -> Result<ChatRequest, ProxyError> {
+    let v: Value = serde_json::from_slice(body).map_err(ProxyError::Serde)?;
+
+    let model = v["model"].as_str().unwrap_or("").to_string();
+    let mut messages = Vec::new();
+
+    if let Some(instructions) = v["instructions"].as_str() {
+        if !instructions.is_empty() {
+            messages.push(msg("system", instructions));
+        }
+    }
+
+    match &v["input"] {
+        Value::String(s) => messages.push(msg("user", s)),
+        Value::Array(items) => {
+            for item in items {
+                let role = item["role"].as_str().unwrap_or("user");
+                let text = match &item["content"] {
+                    Value::String(s) => s.clone(),
+                    Value::Array(parts) => parts
+                        .iter()
+                        .filter_map(|p| {
+                            if matches!(p["type"].as_str(), Some("input_text") | Some("text") | Some("output_text")) {
+                                p["text"].as_str().map(str::to_string)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(""),
+                    _ => String::new(),
+                };
+                messages.push(msg(role, &text));
+            }
+        }
+        _ => {}
+    }
+
+    Ok(ChatRequest {
+        model,
+        messages,
+        stream: v["stream"].as_bool(),
+        temperature: v["temperature"].as_f64().map(|f| f as f32),
+        max_tokens: v["max_output_tokens"].as_u64().map(|n| n as u32),
+        top_p: v["top_p"].as_f64().map(|f| f as f32),
+        stop: None,
+        tools: None,
+        tool_choice: None,
+        response_format: None,
+        extra: Default::default(),
+    })
+}
+
+/// Encode a `ChatResponse` as an OpenAI Responses API response body.
+pub fn chat_response_to_responses(resp: &ChatResponse) -> Value {
+    let text = resp
+        .choices
+        .first()
+        .map(|c| c.message.content.as_text())
+        .unwrap_or("")
+        .to_string();
+    let msg_id = format!("msg_{}", &resp.id);
+    json!({
+        "id": resp.id,
+        "object": "response",
+        "created_at": chrono::Utc::now().timestamp(),
+        "model": resp.model,
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "id": msg_id,
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": text}],
+        }],
+        "usage": resp.usage.as_ref().map(|u| json!({
+            "input_tokens":  u.prompt_tokens,
+            "output_tokens": u.completion_tokens,
+            "total_tokens":  u.total_tokens,
+        })).unwrap_or(json!({"input_tokens":0,"output_tokens":0,"total_tokens":0})),
+    })
+}
+
+/// Stateful adapter that converts an OpenAI SSE byte stream into the
+/// Responses API SSE format consumed by the Codex CLI.
+pub struct ResponsesStreamAdapter {
+    buf: String,
+    model: String,
+    resp_id: String,
+    msg_id: String,
+    initialized: bool,
+    finished: bool,
+    text_buf: String,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+impl ResponsesStreamAdapter {
+    pub fn new(model: &str) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        Self {
+            buf: String::new(),
+            model: model.to_string(),
+            resp_id: format!("resp_{nonce:08x}"),
+            msg_id: format!("msg_{nonce:08x}"),
+            initialized: false,
+            finished: false,
+            text_buf: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
+
+    pub fn process(&mut self, chunk: Bytes) -> Vec<Bytes> {
+        self.buf.push_str(&String::from_utf8_lossy(&chunk));
+        let mut out = Vec::new();
+        while let Some(end) = self.buf.find("\n\n") {
+            let event = self.buf[..end].to_string();
+            self.buf = self.buf[end + 2..].to_string();
+            out.extend(self.handle_event(&event));
+        }
+        out
+    }
+
+    fn handle_event(&mut self, event: &str) -> Vec<Bytes> {
+        let mut out = Vec::new();
+        for line in event.lines() {
+            if !line.starts_with("data: ") {
+                continue;
+            }
+            let data = line[6..].trim();
+            if data == "[DONE]" {
+                if !self.finished {
+                    self.finished = true;
+                    if !self.initialized {
+                        self.initialized = true;
+                        out.extend(self.preamble());
+                    }
+                    out.extend(self.epilogue());
+                }
+                return out;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            let delta = v["choices"][0]["delta"]["content"].as_str().unwrap_or("");
+            let finish = v["choices"][0]["finish_reason"]
+                .as_str()
+                .filter(|s| !s.is_empty() && *s != "null");
+            if let Some(pt) = v["usage"]["prompt_tokens"].as_u64() {
+                self.input_tokens = pt;
+            }
+            if let Some(ct) = v["usage"]["completion_tokens"].as_u64() {
+                self.output_tokens = ct;
+            }
+
+            if !delta.is_empty() {
+                if !self.initialized {
+                    self.initialized = true;
+                    out.extend(self.preamble());
+                }
+                self.text_buf.push_str(delta);
+                out.push(self.text_delta(delta));
+            }
+
+            if finish.is_some() && !self.finished {
+                self.finished = true;
+                if !self.initialized {
+                    self.initialized = true;
+                    out.extend(self.preamble());
+                }
+                out.extend(self.epilogue());
+            }
+        }
+        out
+    }
+
+    fn sse(event_type: &str, data: Value) -> Bytes {
+        Bytes::from(format!("event: {event_type}\ndata: {data}\n\n"))
+    }
+
+    fn preamble(&self) -> Vec<Bytes> {
+        vec![
+            Self::sse(
+                "response.created",
+                json!({
+                    "type": "response.created",
+                    "response": {
+                        "id": self.resp_id, "object": "response",
+                        "created_at": chrono::Utc::now().timestamp(),
+                        "status": "in_progress", "model": self.model, "output": [],
+                    },
+                }),
+            ),
+            Self::sse(
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added", "output_index": 0,
+                    "item": {
+                        "id": self.msg_id, "object": "realtime.item",
+                        "type": "message", "status": "in_progress",
+                        "role": "assistant", "content": [],
+                    },
+                }),
+            ),
+            Self::sse(
+                "response.content_part.added",
+                json!({
+                    "type": "response.content_part.added",
+                    "item_id": self.msg_id, "output_index": 0, "content_index": 0,
+                    "part": {"type": "output_text", "text": ""},
+                }),
+            ),
+        ]
+    }
+
+    fn text_delta(&self, delta: &str) -> Bytes {
+        Self::sse(
+            "response.output_text.delta",
+            json!({
+                "type": "response.output_text.delta",
+                "item_id": self.msg_id, "output_index": 0, "content_index": 0,
+                "delta": delta,
+            }),
+        )
+    }
+
+    fn epilogue(&self) -> Vec<Bytes> {
+        let text = &self.text_buf;
+        let total = self.input_tokens + self.output_tokens;
+        vec![
+            Self::sse(
+                "response.output_text.done",
+                json!({
+                    "type": "response.output_text.done",
+                    "item_id": self.msg_id, "output_index": 0, "content_index": 0,
+                    "text": text,
+                }),
+            ),
+            Self::sse(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done", "output_index": 0,
+                    "item": {
+                        "id": self.msg_id, "object": "realtime.item",
+                        "type": "message", "status": "completed",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    },
+                }),
+            ),
+            Self::sse(
+                "response.completed",
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": self.resp_id, "object": "response",
+                        "created_at": chrono::Utc::now().timestamp(),
+                        "status": "completed", "model": self.model,
+                        "output": [{
+                            "type": "message", "id": self.msg_id,
+                            "role": "assistant", "status": "completed",
+                            "content": [{"type": "output_text", "text": text}],
+                        }],
+                        "usage": {
+                            "input_tokens": self.input_tokens,
+                            "output_tokens": self.output_tokens,
+                            "total_tokens": total,
+                        },
+                    },
+                }),
+            ),
+        ]
+    }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 fn msg(role: &str, text: &str) -> ChatMessage {

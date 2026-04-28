@@ -345,6 +345,17 @@ async fn openai_responses_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // Check model prefix for cross-provider routing.
+    let raw_model = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["model"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    if let Some(prefix) = raw_model.split('/').next() {
+        if raw_model.contains('/') && prefix != "openai" {
+            return responses_cross_provider(state, headers, body, raw_model).await;
+        }
+    }
+
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -371,6 +382,70 @@ async fn openai_responses_handler(
     let body = strip_model_provider_prefix(body, "openai");
     let url = reqwest::Url::parse("https://api.openai.com/v1/responses").unwrap();
     native_forward(&state.http, url, &headers, injected, body).await
+}
+
+/// Handle a Codex request destined for a non-OpenAI provider.
+/// Translates the Responses API format into a ChatRequest, routes it
+/// through the provider registry, and returns a Responses API response.
+async fn responses_cross_provider(
+    state: AppState,
+    headers: HeaderMap,
+    body: Bytes,
+    canonical_model: String,
+) -> Response {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let mut req = match cross_provider::responses_to_chat_request(&body) {
+        Ok(r) => r,
+        Err(e) => return proxy_error_to_response(&e),
+    };
+    req.model = canonical_model.clone();
+
+    let (provider, model_id, cred) =
+        match state.registry.resolve(&canonical_model, auth.as_deref()) {
+            Ok(r) => r,
+            Err(e) => return proxy_error_to_response(&e),
+        };
+
+    if req.stream.unwrap_or(false) {
+        match provider.chat_stream(req, &model_id, &cred).await {
+            Ok(stream) => {
+                let mut adapter = cross_provider::ResponsesStreamAdapter::new(&model_id);
+                let adapted = stream.flat_map(move |item| {
+                    let chunks = match item {
+                        Ok(b) => adapter.process(b),
+                        Err(e) => {
+                            let msg = format!(
+                                "event: error\ndata: {{\"type\":\"error\",\"message\":\"{e}\"}}\n\n"
+                            );
+                            vec![Bytes::from(msg)]
+                        }
+                    };
+                    futures::stream::iter(chunks.into_iter().map(Ok::<_, Infallible>))
+                });
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .header("cache-control", "no-cache")
+                    .header("connection", "keep-alive")
+                    .body(Body::from_stream(adapted))
+                    .unwrap()
+            }
+            Err(e) => proxy_error_to_response(&e),
+        }
+    } else {
+        match provider.chat(req, &model_id, &cred).await {
+            Ok(resp) => Response::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    cross_provider::chat_response_to_responses(&resp).to_string(),
+                ))
+                .unwrap(),
+            Err(e) => proxy_error_to_response(&e),
+        }
+    }
 }
 
 async fn anthropic_messages_handler(
