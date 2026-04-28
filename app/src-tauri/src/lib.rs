@@ -232,7 +232,7 @@ fn read_codex_status() -> AgentStatus {
     let active = val
         .get("model_providers").and_then(|mp| mp.get("llmproxy"))
         .and_then(|p| p.get("base_url")).and_then(|v| v.as_str())
-        == Some("http://localhost:8080/openai");
+        == Some("http://localhost:8080/openai/v1");
     let model = val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
     AgentStatus { config_path, config_exists: true, active, model }
 }
@@ -322,7 +322,7 @@ fn apply_codex(model: &str) -> Result<(), String> {
     let mut provider = toml::map::Map::new();
     provider.insert("name".into(), toml::Value::String("llmproxy".into()));
     provider.insert("base_url".into(),
-        toml::Value::String("http://localhost:8080/openai".into()));
+        toml::Value::String("http://localhost:8080/openai/v1".into()));
     provider.insert("wire_api".into(), toml::Value::String("responses".into()));
     provider.insert("requires_openai_auth".into(), toml::Value::Boolean(true));
 
