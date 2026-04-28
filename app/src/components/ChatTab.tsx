@@ -132,6 +132,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const appliedModelForConvRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!proxyOnline || configuredProviders.length === 0) return;
@@ -201,10 +202,18 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   }, [configuredProviders, modelsByProvider]);
 
   useEffect(() => {
-    if (!activeConvId) return;
+    if (!activeConvId) {
+      appliedModelForConvRef.current = null;
+      return;
+    }
+    // Don't re-apply while models are still loading or unavailable
+    if (loadingModels || Object.keys(modelsByProvider).length === 0) return;
+    // Only apply once per conversation; user changes after that are preserved
+    if (appliedModelForConvRef.current === activeConvId) return;
+    appliedModelForConvRef.current = activeConvId;
     const convo = conversationStore.get(activeConvId);
     if (convo?.model) applyConvoModel(convo.model);
-  }, [activeConvId, applyConvoModel]);
+  }, [activeConvId, loadingModels, modelsByProvider, applyConvoModel]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
