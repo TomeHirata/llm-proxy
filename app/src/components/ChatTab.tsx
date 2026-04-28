@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { conversationStore, type Conversation } from "../conversationStore";
+import { conversationStore, type Conversation, type Message as StoredMessage } from "../conversationStore";
 
 const PROXY_BASE = "http://127.0.0.1:8080";
 
@@ -304,7 +304,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
     const [provider] = activeModel.split("/");
     const now = Date.now();
     const convoBase: Conversation = activeConv ?? { id: convId, title: "", provider, model: activeModel, messages: [], createdAt: now, updatedAt: now };
-    conversationStore.upsert({ ...convoBase, messages: next as never });
+    conversationStore.upsert({ ...convoBase, messages: next as StoredMessage[] });
     setConversations(conversationStore.list());
 
     const assistantIdx = next.length;
@@ -362,7 +362,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       if ((e as { name?: string }).name === "AbortError") {
         const last = latestMessages[latestMessages.length - 1];
         if (last?.role === "assistant" && last.content) {
-          conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
+          conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as StoredMessage[] });
           setConversations(conversationStore.list());
         }
         setStreamingMessages(null);
@@ -370,7 +370,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       } else {
         setError(String(e));
         const trimmed = latestMessages.slice(0, -1);
-        conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as never });
+        conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as StoredMessage[] });
         setConversations(conversationStore.list());
       }
     } finally {
@@ -381,9 +381,9 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
     const last = latestMessages[latestMessages.length - 1];
     if (last?.role === "assistant" && !last.content) {
       const trimmed = latestMessages.slice(0, -1);
-      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as never });
+      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as StoredMessage[] });
     } else {
-      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
+      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as StoredMessage[] });
     }
     setConversations(conversationStore.list());
   };
