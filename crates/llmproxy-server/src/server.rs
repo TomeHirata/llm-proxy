@@ -314,6 +314,24 @@ async fn native_forward(
         .unwrap()
 }
 
+/// If the request body is valid JSON and `model` starts with `{provider}/`,
+/// return a new body with that prefix stripped. Otherwise return the body unchanged.
+fn strip_model_provider_prefix(body: Bytes, provider: &str) -> Bytes {
+    let prefix = format!("{provider}/");
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let Some(model) = v["model"].as_str() else {
+        return body;
+    };
+    let Some(stripped) = model.strip_prefix(prefix.as_str()) else {
+        return body;
+    };
+    let stripped = stripped.to_string();
+    v["model"] = serde_json::Value::String(stripped);
+    serde_json::to_vec(&v).map(Bytes::from).unwrap_or(body)
+}
+
 fn make_header_value(s: &str) -> Result<reqwest::header::HeaderValue, Box<Response>> {
     reqwest::header::HeaderValue::from_str(s).map_err(|_| {
         Box::new(proxy_error_to_response(&ProxyError::Config(
@@ -349,6 +367,8 @@ async fn openai_responses_handler(
     };
     let mut injected = reqwest::header::HeaderMap::new();
     injected.insert(reqwest::header::AUTHORIZATION, bearer);
+    // Strip canonical "openai/" prefix from model field before forwarding.
+    let body = strip_model_provider_prefix(body, "openai");
     let url = reqwest::Url::parse("https://api.openai.com/v1/responses").unwrap();
     native_forward(&state.http, url, &headers, injected, body).await
 }

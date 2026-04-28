@@ -29,7 +29,7 @@ const AGENTS = [
     key: "codex" as const,
     name: "OpenAI Codex CLI",
     description: "OpenAI's terminal coding agent",
-    baseUrl: "http://localhost:8080/v1",
+    baseUrl: "http://localhost:8080/openai",
     defaultModel: "openai/gpt-4o",
     modelHint: "provider/model (e.g. openai/gpt-4o, anthropic/claude-sonnet-4-6)",
     logo: "◎",

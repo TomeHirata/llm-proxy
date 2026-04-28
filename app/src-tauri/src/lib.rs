@@ -230,7 +230,7 @@ fn read_codex_status() -> AgentStatus {
     let val: toml::Value = toml::from_str(&raw)
         .unwrap_or(toml::Value::Table(toml::map::Map::new()));
     let active = val.get("openai_base_url").and_then(|v| v.as_str())
-        == Some("http://localhost:8080/v1");
+        == Some("http://localhost:8080/openai");
     let model = val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
     AgentStatus { config_path, config_exists: true, active, model }
 }
@@ -313,7 +313,7 @@ fn apply_codex(model: &str) -> Result<(), String> {
 
     table.insert("model".into(), toml::Value::String(model.into()));
     table.insert("openai_base_url".into(),
-        toml::Value::String("http://localhost:8080/v1".into()));
+        toml::Value::String("http://localhost:8080/openai".into()));
 
     std::fs::write(&path,
         toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?)
