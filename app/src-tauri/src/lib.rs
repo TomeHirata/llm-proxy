@@ -264,7 +264,7 @@ fn read_codex_status() -> AgentStatus {
 }
 
 fn read_gemini_status() -> AgentStatus {
-    let path = home_dir().join(".gemini").join("settings.json");
+    let path = home_dir().join(".gemini").join(".env");
     let config_path = path.to_string_lossy().to_string();
     if !path.exists() {
         return AgentStatus {
@@ -275,9 +275,15 @@ fn read_gemini_status() -> AgentStatus {
         };
     }
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
-    let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-    let active = json["apiEndpoint"].as_str() == Some("http://localhost:8080/gemini");
-    let model = json["model"]["name"].as_str().unwrap_or("").to_string();
+    let mut active = false;
+    let mut model = String::new();
+    for line in raw.lines() {
+        if let Some(val) = line.strip_prefix("GOOGLE_GEMINI_BASE_URL=") {
+            active = val == "http://localhost:8080/gemini";
+        } else if let Some(val) = line.strip_prefix("GEMINI_MODEL=") {
+            model = val.to_string();
+        }
+    }
     AgentStatus {
         config_path,
         config_exists: true,
@@ -402,24 +408,33 @@ fn apply_codex(model: &str) -> Result<(), String> {
 }
 
 fn apply_gemini(model: &str) -> Result<(), String> {
-    let path = home_dir().join(".gemini").join("settings.json");
-    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let dir = home_dir().join(".gemini");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(".env");
 
-    let mut json: serde_json::Value = if path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
-            .unwrap_or_else(|_| serde_json::json!({}))
+    // Preserve unrelated lines; replace or append our keys.
+    let existing = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
     } else {
-        serde_json::json!({})
+        String::new()
     };
+    let our_keys = [
+        "GOOGLE_GEMINI_BASE_URL=",
+        "GEMINI_MODEL=",
+        "GEMINI_API_KEY=",
+    ];
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
+        .map(str::to_string)
+        .collect();
+    lines.push(format!(
+        "GOOGLE_GEMINI_BASE_URL=http://localhost:8080/gemini"
+    ));
+    lines.push(format!("GEMINI_MODEL={model}"));
+    lines.push(format!("GEMINI_API_KEY=llmproxy"));
 
-    json["apiEndpoint"] = serde_json::Value::String("http://localhost:8080/gemini".into());
-    json["model"] = serde_json::json!({ "name": model });
-
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())
+    std::fs::write(&path, lines.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -483,20 +498,19 @@ fn reset_codex() -> Result<(), String> {
 }
 
 fn reset_gemini() -> Result<(), String> {
-    let path = home_dir().join(".gemini").join("settings.json");
+    let path = home_dir().join(".gemini").join(".env");
     if !path.exists() {
         return Ok(());
     }
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut json: serde_json::Value =
-        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
-    if let Some(o) = json.as_object_mut() {
-        o.remove("apiEndpoint");
-        o.remove("model");
-    }
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())
+    let our_keys = [
+        "GOOGLE_GEMINI_BASE_URL=",
+        "GEMINI_MODEL=",
+        "GEMINI_API_KEY=",
+    ];
+    let filtered: Vec<&str> = raw
+        .lines()
+        .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
+        .collect();
+    std::fs::write(&path, filtered.join("\n") + "\n").map_err(|e| e.to_string())
 }
