@@ -389,23 +389,20 @@ async fn openai_responses_handler(
 /// through the provider registry, and returns a Responses API response.
 async fn responses_cross_provider(
     state: AppState,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Bytes,
     canonical_model: String,
 ) -> Response {
-    let auth = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-
     let mut req = match cross_provider::responses_to_chat_request(&body) {
         Ok(r) => r,
         Err(e) => return proxy_error_to_response(&e),
     };
     req.model = canonical_model.clone();
 
+    // Use None for auth so the registry uses the configured provider credential,
+    // not the proxy-internal key Codex sends (e.g. "llmproxy").
     let (provider, model_id, cred) =
-        match state.registry.resolve(&canonical_model, auth.as_deref()) {
+        match state.registry.resolve(&canonical_model, None) {
             Ok(r) => r,
             Err(e) => return proxy_error_to_response(&e),
         };
@@ -721,23 +718,20 @@ async fn gemini_canonical_handler(
 /// through the provider registry, and returns an Anthropic-format response.
 async fn anthropic_cross_provider(
     state: AppState,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Bytes,
     canonical_model: String,
 ) -> Response {
-    let auth = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-
     let mut req = match cross_provider::anthropic_to_chat_request(&body) {
         Ok(r) => r,
         Err(e) => return proxy_error_to_response(&e),
     };
     req.model = canonical_model.clone();
 
+    // Use None so the registry uses the configured provider credential,
+    // not the proxy-internal key Claude Code sends (e.g. "llmproxy").
     let (provider, model_id, cred) =
-        match state.registry.resolve(&canonical_model, auth.as_deref()) {
+        match state.registry.resolve(&canonical_model, None) {
             Ok(r) => r,
             Err(e) => return proxy_error_to_response(&e),
         };
@@ -786,15 +780,11 @@ async fn anthropic_cross_provider(
 /// through the provider registry, and returns a Gemini-format response.
 async fn gemini_cross_provider(
     state: AppState,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     query: Option<String>,
     body: Bytes,
     canonical_model: String,
 ) -> Response {
-    let auth = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
     let want_stream = query
         .as_deref()
         .map(|q| q.contains("alt=sse"))
@@ -806,8 +796,10 @@ async fn gemini_cross_provider(
     };
     req.stream = if want_stream { Some(true) } else { None };
 
+    // Use None so the registry uses the configured provider credential,
+    // not the proxy-internal key Gemini CLI sends.
     let (provider, model_id, cred) =
-        match state.registry.resolve(&canonical_model, auth.as_deref()) {
+        match state.registry.resolve(&canonical_model, None) {
             Ok(r) => r,
             Err(e) => return proxy_error_to_response(&e),
         };
