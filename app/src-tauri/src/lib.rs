@@ -334,6 +334,18 @@ fn apply_claude_code(model: &str) -> Result<(), String> {
         "ANTHROPIC_API_KEY".into(),
         serde_json::Value::String("llmproxy".into()),
     );
+    env_map.insert(
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
+        serde_json::Value::String("claude-haiku-4-5-20251001".into()),
+    );
+    env_map.insert(
+        "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
+        serde_json::Value::String("claude-sonnet-4-6".into()),
+    );
+    env_map.insert(
+        "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
+        serde_json::Value::String("claude-opus-4-7".into()),
+    );
     json["env"] = serde_json::Value::Object(env_map);
     json["model"] = serde_json::Value::String(model.into());
 
@@ -435,6 +447,9 @@ fn reset_claude_code() -> Result<(), String> {
     if let Some(env) = json["env"].as_object_mut() {
         env.remove("ANTHROPIC_BASE_URL");
         env.remove("ANTHROPIC_API_KEY");
+        env.remove("ANTHROPIC_DEFAULT_HAIKU_MODEL");
+        env.remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
+        env.remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
     }
     json.as_object_mut().map(|o| o.remove("model"));
     std::fs::write(
