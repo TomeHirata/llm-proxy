@@ -43,12 +43,18 @@ impl ProviderRegistry {
             }
         }
 
-        // Databricks requires a workspace URL (endpoint); registered when present.
+        // Databricks requires a non-empty workspace URL; treat whitespace-only
+        // (e.g. unset ${ENV_VAR} interpolation) the same as absent.
         if let Some(p) = cfg.providers.get("databricks") {
-            if let Some(endpoint) = &p.endpoint {
+            if let Some(endpoint) = p
+                .endpoint
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 providers.insert(
                     "databricks".into(),
-                    Arc::new(PassthroughProvider::databricks(endpoint.clone())),
+                    Arc::new(PassthroughProvider::databricks(endpoint.to_string())),
                 );
             }
         }
@@ -360,6 +366,48 @@ mod tests {
             Credential::BearerToken(s) => assert_eq!(s, "from-env"),
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    #[serial(env)]
+    fn databricks_token_env_var_fallback() {
+        let _g = EnvGuard::new(&["DATABRICKS_TOKEN"]);
+        std::env::set_var("DATABRICKS_TOKEN", "dapi-from-env");
+        let mut cfg = AppConfig::default();
+        cfg.providers.insert(
+            "databricks".into(),
+            ProviderConfig {
+                endpoint: Some("https://my-workspace.azuredatabricks.net".into()),
+                ..Default::default()
+            },
+        );
+        let reg = ProviderRegistry::from_config(&cfg);
+        let (_, id, cred) = reg
+            .resolve("databricks/databricks-mixtral-8x7b", None)
+            .unwrap();
+        assert_eq!(id, "databricks-mixtral-8x7b");
+        match cred {
+            Credential::BearerToken(s) => assert_eq!(s, "dapi-from-env"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn databricks_empty_endpoint_not_registered() {
+        let mut cfg = AppConfig::default();
+        cfg.providers.insert(
+            "databricks".into(),
+            ProviderConfig {
+                endpoint: Some("   ".into()),
+                ..Default::default()
+            },
+        );
+        let reg = ProviderRegistry::from_config(&cfg);
+        let err = reg
+            .resolve("databricks/any-model", None)
+            .err()
+            .expect("expected error");
+        assert!(matches!(err, ProxyError::ModelNotFound(_)));
     }
 
     #[test]

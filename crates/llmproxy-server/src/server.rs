@@ -1415,6 +1415,26 @@ mod tests {
     use axum::body::to_bytes;
     use tower::ServiceExt;
 
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let saved = keys.iter().map(|k| (*k, std::env::var(*k).ok())).collect();
+            Self { saved }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
     /// Minimal AppState wired to a real (but unconfigured) registry so the
     /// credential-missing path returns 401 without hitting any upstream.
     fn state_no_creds() -> AppState {
@@ -1438,7 +1458,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env)]
     async fn openai_missing_cred_returns_401() {
+        let _g = EnvGuard::new(&["OPENAI_API_KEY"]);
+        std::env::remove_var("OPENAI_API_KEY");
         let app = router(state_no_creds());
         let req = axum::http::Request::builder()
             .method("POST")
@@ -1451,7 +1474,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env)]
     async fn anthropic_missing_cred_returns_401() {
+        let _g = EnvGuard::new(&["ANTHROPIC_API_KEY"]);
+        std::env::remove_var("ANTHROPIC_API_KEY");
         let app = router(state_no_creds());
         let req = axum::http::Request::builder()
             .method("POST")
@@ -1464,7 +1490,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env)]
     async fn gemini_missing_cred_returns_401() {
+        let _g = EnvGuard::new(&["GEMINI_API_KEY"]);
+        std::env::remove_var("GEMINI_API_KEY");
         let app = router(state_no_creds());
         let req = axum::http::Request::builder()
             .method("POST")
