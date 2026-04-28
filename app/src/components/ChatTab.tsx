@@ -19,6 +19,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   togetherai: "TogetherAI",
   bedrock: "AWS Bedrock",
   azure: "Azure OpenAI",
+  databricks: "Databricks",
 };
 
 type ContentPart =

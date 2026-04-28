@@ -2,10 +2,29 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { api, type Config, type ProviderPatch } from "../api";
 
-const ALL_PROVIDERS = [
+type FieldOverrides = {
+  api_key?: { label?: string; placeholder?: string };
+  endpoint?: { label?: string; placeholder?: string };
+};
+
+const ALL_PROVIDERS: {
+  name: string;
+  label: string;
+  fields: string[];
+  fieldOverrides?: FieldOverrides;
+}[] = [
   { name: "openai", label: "OpenAI", fields: ["api_key"] },
   { name: "anthropic", label: "Anthropic", fields: ["api_key"] },
   { name: "gemini", label: "Gemini", fields: ["api_key"] },
+  {
+    name: "databricks",
+    label: "Databricks",
+    fields: ["endpoint", "api_key"],
+    fieldOverrides: {
+      endpoint: { label: "Workspace URL", placeholder: "https://my-workspace.azuredatabricks.net" },
+      api_key: { label: "Personal Access Token" },
+    },
+  },
   { name: "mistral", label: "Mistral", fields: ["api_key"] },
   { name: "togetherai", label: "TogetherAI", fields: ["api_key"] },
   {
@@ -105,7 +124,7 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
         <div className="p-3 bg-red-50 text-red-700 rounded text-sm">{error}</div>
       )}
 
-      {ALL_PROVIDERS.map(({ name, label, fields }) => {
+      {ALL_PROVIDERS.map(({ name, label, fields, fieldOverrides }) => {
         const configured = configuredProviders.includes(name);
         const isEditing = editing === name;
 
@@ -146,23 +165,23 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
               <div className="space-y-2 mt-3">
                 {fields.includes("api_key") && (
                   <Field
-                    label="API Key"
+                    label={fieldOverrides?.api_key?.label ?? "API Key"}
                     value={draft.api_key}
                     onChange={(v) => setDraft({ ...draft, api_key: v })}
                     secret
                     placeholder={
                       cfg?.providers[name]?.api_key === "***"
                         ? "● ● ● ● ● ●  (leave blank to keep current)"
-                        : "sk-..."
+                        : (fieldOverrides?.api_key?.placeholder ?? "sk-...")
                     }
                   />
                 )}
                 {fields.includes("endpoint") && (
                   <Field
-                    label="Endpoint"
+                    label={fieldOverrides?.endpoint?.label ?? "Endpoint"}
                     value={draft.endpoint}
                     onChange={(v) => setDraft({ ...draft, endpoint: v })}
-                    placeholder="https://my-resource.openai.azure.com"
+                    placeholder={fieldOverrides?.endpoint?.placeholder ?? "https://my-resource.openai.azure.com"}
                   />
                 )}
                 {fields.includes("api_version") && (

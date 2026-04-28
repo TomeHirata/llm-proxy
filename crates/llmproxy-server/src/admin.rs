@@ -299,6 +299,24 @@ async fn provider_models_handler(
         "togetherai" => {
             fetch_openai_compat_models(&s.http, &token, "https://api.together.xyz/v1/models").await
         }
+        "databricks" => {
+            let workspace_url = s
+                .cfg
+                .providers
+                .get("databricks")
+                .and_then(|p| p.endpoint.as_deref())
+                .unwrap_or_default()
+                .trim_end_matches('/')
+                .to_string();
+            if workspace_url.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "databricks endpoint not configured"})),
+                )
+                    .into_response();
+            }
+            fetch_databricks_models(&s.http, &token, &workspace_url).await
+        }
         _ => {
             return (
                 StatusCode::NOT_FOUND,
@@ -444,6 +462,40 @@ async fn fetch_gemini_models(client: &reqwest::Client, token: &str) -> Result<Ve
             }
         }
     }
+    ids.sort();
+    Ok(ids)
+}
+
+async fn fetch_databricks_models(
+    client: &reqwest::Client,
+    token: &str,
+    workspace_url: &str,
+) -> Result<Vec<String>, String> {
+    let url = format!("{workspace_url}/api/2.0/serving-endpoints");
+    let resp = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Databricks API error {status}: {body}"));
+    }
+    let body = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("parse error: {e}"))?;
+    let mut ids: Vec<String> = body["endpoints"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["name"].as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
     ids.sort();
     Ok(ids)
 }
