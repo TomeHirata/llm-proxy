@@ -393,6 +393,9 @@ async fn responses_cross_provider(
     body: Bytes,
     canonical_model: String,
 ) -> Response {
+    let started = Instant::now();
+    let request_body_str = String::from_utf8_lossy(&body).into_owned();
+
     let mut req = match cross_provider::responses_to_chat_request(&body) {
         Ok(r) => r,
         Err(e) => return proxy_error_to_response(&e),
@@ -407,19 +410,35 @@ async fn responses_cross_provider(
             Err(e) => return proxy_error_to_response(&e),
         };
 
+    let provider_name = canonical_model
+        .split_once('/')
+        .map(|(p, _)| p.to_string())
+        .unwrap_or_default();
+
     if req.stream.unwrap_or(false) {
         match provider.chat_stream(req, &model_id, &cred).await {
             Ok(stream) => {
+                let byte_stream = stream.map(|item| match item {
+                    Ok(b) => Ok::<_, Infallible>(b),
+                    Err(e) => Ok(Bytes::from(
+                        format!("data: {{\"error\":{{\"message\":\"{e}\",\"type\":\"proxy_error\"}}}}\n\n")
+                            .into_bytes(),
+                    )),
+                });
+                let finalizer = StreamFinalizer {
+                    store: state.usage_store.clone(),
+                    provider: provider_name,
+                    model_id: model_id.clone(),
+                    request_body: truncate_body(request_body_str, state.max_body_bytes),
+                    started,
+                    max_body_bytes: state.max_body_bytes,
+                    sse_format: SseFormat::OpenAI,
+                };
                 let mut adapter = cross_provider::ResponsesStreamAdapter::new(&model_id);
-                let adapted = stream.flat_map(move |item| {
+                let adapted = FinalizedStream::new(byte_stream, finalizer).flat_map(move |item| {
                     let chunks = match item {
                         Ok(b) => adapter.process(b),
-                        Err(e) => {
-                            let msg = format!(
-                                "event: error\ndata: {{\"type\":\"error\",\"message\":\"{e}\"}}\n\n"
-                            );
-                            vec![Bytes::from(msg)]
-                        }
+                        Err(_) => vec![],
                     };
                     futures::stream::iter(chunks.into_iter().map(Ok::<_, Infallible>))
                 });
@@ -434,13 +453,28 @@ async fn responses_cross_provider(
         }
     } else {
         match provider.chat(req, &model_id, &cred).await {
-            Ok(resp) => Response::builder()
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    cross_provider::chat_response_to_responses(&resp).to_string(),
-                ))
-                .unwrap(),
-            Err(e) => proxy_error_to_response(&e),
+            Ok(resp) => {
+                let body_out = cross_provider::chat_response_to_responses(&resp).to_string();
+                let pt = resp.usage.as_ref().map(|u| u.prompt_tokens as i64);
+                let ct = resp.usage.as_ref().map(|u| u.completion_tokens as i64);
+                let tt = resp.usage.as_ref().map(|u| u.total_tokens as i64);
+                record_raw(
+                    &state, &provider_name, &model_id, 200, started, false,
+                    &request_body_str, &body_out, pt, ct, tt, None,
+                );
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(body_out))
+                    .unwrap()
+            }
+            Err(e) => {
+                let status = error_status(&e);
+                record_raw(
+                    &state, &provider_name, &model_id, status, started, false,
+                    &request_body_str, "", None, None, None, Some(e.to_string()),
+                );
+                proxy_error_to_response(&e)
+            }
         }
     }
 }
@@ -722,6 +756,9 @@ async fn anthropic_cross_provider(
     body: Bytes,
     canonical_model: String,
 ) -> Response {
+    let started = Instant::now();
+    let request_body_str = String::from_utf8_lossy(&body).into_owned();
+
     let mut req = match cross_provider::anthropic_to_chat_request(&body) {
         Ok(r) => r,
         Err(e) => return proxy_error_to_response(&e),
@@ -736,20 +773,35 @@ async fn anthropic_cross_provider(
             Err(e) => return proxy_error_to_response(&e),
         };
 
+    let provider_name = canonical_model
+        .split_once('/')
+        .map(|(p, _)| p.to_string())
+        .unwrap_or_default();
+
     if req.stream.unwrap_or(false) {
         match provider.chat_stream(req, &model_id, &cred).await {
             Ok(stream) => {
+                let byte_stream = stream.map(|item| match item {
+                    Ok(b) => Ok::<_, Infallible>(b),
+                    Err(e) => Ok(Bytes::from(
+                        format!("data: {{\"error\":{{\"message\":\"{e}\",\"type\":\"proxy_error\"}}}}\n\n")
+                            .into_bytes(),
+                    )),
+                });
+                let finalizer = StreamFinalizer {
+                    store: state.usage_store.clone(),
+                    provider: provider_name,
+                    model_id: model_id.clone(),
+                    request_body: truncate_body(request_body_str, state.max_body_bytes),
+                    started,
+                    max_body_bytes: state.max_body_bytes,
+                    sse_format: SseFormat::OpenAI,
+                };
                 let mut adapter = cross_provider::AnthropicStreamAdapter::new(&model_id);
-                let adapted = stream.flat_map(move |item| {
+                let adapted = FinalizedStream::new(byte_stream, finalizer).flat_map(move |item| {
                     let chunks = match item {
                         Ok(b) => adapter.process(b),
-                        Err(e) => {
-                            let msg = format!(
-                                "event: error\ndata: {{\"type\":\"error\",\"error\":{{\"message\":\"{}\"}}}}\n\n",
-                                e
-                            );
-                            vec![Bytes::from(msg)]
-                        }
+                        Err(_) => vec![],
                     };
                     futures::stream::iter(chunks.into_iter().map(Ok::<_, Infallible>))
                 });
@@ -764,13 +816,28 @@ async fn anthropic_cross_provider(
         }
     } else {
         match provider.chat(req, &model_id, &cred).await {
-            Ok(resp) => Response::builder()
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    cross_provider::chat_response_to_anthropic(&resp).to_string(),
-                ))
-                .unwrap(),
-            Err(e) => proxy_error_to_response(&e),
+            Ok(resp) => {
+                let body_out = cross_provider::chat_response_to_anthropic(&resp).to_string();
+                let pt = resp.usage.as_ref().map(|u| u.prompt_tokens as i64);
+                let ct = resp.usage.as_ref().map(|u| u.completion_tokens as i64);
+                let tt = resp.usage.as_ref().map(|u| u.total_tokens as i64);
+                record_raw(
+                    &state, &provider_name, &model_id, 200, started, false,
+                    &request_body_str, &body_out, pt, ct, tt, None,
+                );
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(body_out))
+                    .unwrap()
+            }
+            Err(e) => {
+                let status = error_status(&e);
+                record_raw(
+                    &state, &provider_name, &model_id, status, started, false,
+                    &request_body_str, "", None, None, None, Some(e.to_string()),
+                );
+                proxy_error_to_response(&e)
+            }
         }
     }
 }
@@ -785,6 +852,9 @@ async fn gemini_cross_provider(
     body: Bytes,
     canonical_model: String,
 ) -> Response {
+    let started = Instant::now();
+    let request_body_str = String::from_utf8_lossy(&body).into_owned();
+
     let want_stream = query
         .as_deref()
         .map(|q| q.contains("alt=sse"))
@@ -804,18 +874,35 @@ async fn gemini_cross_provider(
             Err(e) => return proxy_error_to_response(&e),
         };
 
+    let provider_name = canonical_model
+        .split_once('/')
+        .map(|(p, _)| p.to_string())
+        .unwrap_or_default();
+
     if want_stream {
         match provider.chat_stream(req, &model_id, &cred).await {
             Ok(stream) => {
+                let byte_stream = stream.map(|item| match item {
+                    Ok(b) => Ok::<_, Infallible>(b),
+                    Err(e) => Ok(Bytes::from(
+                        format!("data: {{\"error\":{{\"message\":\"{e}\",\"type\":\"proxy_error\"}}}}\n\n")
+                            .into_bytes(),
+                    )),
+                });
+                let finalizer = StreamFinalizer {
+                    store: state.usage_store.clone(),
+                    provider: provider_name,
+                    model_id: model_id.clone(),
+                    request_body: truncate_body(request_body_str, state.max_body_bytes),
+                    started,
+                    max_body_bytes: state.max_body_bytes,
+                    sse_format: SseFormat::OpenAI,
+                };
                 let mut adapter = cross_provider::GeminiStreamAdapter::new(&model_id);
-                let adapted = stream.flat_map(move |item| {
+                let adapted = FinalizedStream::new(byte_stream, finalizer).flat_map(move |item| {
                     let chunks = match item {
                         Ok(b) => adapter.process(b),
-                        Err(e) => {
-                            let msg =
-                                format!("data: {{\"error\": \"{e}\"}}\n\n");
-                            vec![Bytes::from(msg)]
-                        }
+                        Err(_) => vec![],
                     };
                     futures::stream::iter(chunks.into_iter().map(Ok::<_, Infallible>))
                 });
@@ -829,14 +916,40 @@ async fn gemini_cross_provider(
         }
     } else {
         match provider.chat(req, &model_id, &cred).await {
-            Ok(resp) => Response::builder()
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    cross_provider::chat_response_to_gemini(&resp).to_string(),
-                ))
-                .unwrap(),
-            Err(e) => proxy_error_to_response(&e),
+            Ok(resp) => {
+                let body_out = cross_provider::chat_response_to_gemini(&resp).to_string();
+                let pt = resp.usage.as_ref().map(|u| u.prompt_tokens as i64);
+                let ct = resp.usage.as_ref().map(|u| u.completion_tokens as i64);
+                let tt = resp.usage.as_ref().map(|u| u.total_tokens as i64);
+                record_raw(
+                    &state, &provider_name, &model_id, 200, started, false,
+                    &request_body_str, &body_out, pt, ct, tt, None,
+                );
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(body_out))
+                    .unwrap()
+            }
+            Err(e) => {
+                let status = error_status(&e);
+                record_raw(
+                    &state, &provider_name, &model_id, status, started, false,
+                    &request_body_str, "", None, None, None, Some(e.to_string()),
+                );
+                proxy_error_to_response(&e)
+            }
         }
+    }
+}
+
+fn error_status(err: &ProxyError) -> u16 {
+    match err {
+        ProxyError::ModelNotFound(_) => 404,
+        ProxyError::Config(_) => 401,
+        ProxyError::Upstream { status, .. } => *status,
+        ProxyError::NotImplemented(_) => 501,
+        ProxyError::Serde(_) => 400,
+        _ => 502,
     }
 }
 
