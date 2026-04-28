@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { conversationStore, type Conversation } from "../conversationStore";
+import { conversationStore, type Conversation, type Message as StoredMessage } from "../conversationStore";
 
 const PROXY_BASE = "http://127.0.0.1:8080";
 
@@ -127,11 +127,12 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [streamingMessages, setStreamingMessages] = useState<Message[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const lastSaveRef = useRef<number>(0);
+  const appliedModelForConvRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!proxyOnline || configuredProviders.length === 0) return;
@@ -201,14 +202,22 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   }, [configuredProviders, modelsByProvider]);
 
   useEffect(() => {
-    if (!activeConvId) return;
+    if (!activeConvId) {
+      appliedModelForConvRef.current = null;
+      return;
+    }
+    // Don't re-apply while models are still loading or unavailable
+    if (loadingModels || Object.keys(modelsByProvider).length === 0) return;
+    // Only apply once per conversation; user changes after that are preserved
+    if (appliedModelForConvRef.current === activeConvId) return;
+    appliedModelForConvRef.current = activeConvId;
     const convo = conversationStore.get(activeConvId);
     if (convo?.model) applyConvoModel(convo.model);
-  }, [activeConvId, applyConvoModel]);
+  }, [activeConvId, loadingModels, modelsByProvider, applyConvoModel]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, streamingMessages]);
 
   const activeModel = useCustom
     ? customModel.trim()
@@ -247,6 +256,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
     files.forEach((file) => {
       const reader = new FileReader();
       const isImage = file.type.startsWith("image/");
+      const isAudio = file.type.startsWith("audio/");
       reader.onload = (ev) => {
         const dataUrl = ev.target?.result as string;
         if (isImage) {
@@ -257,16 +267,19 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
             data: dataUrl,
             mimeType: file.type,
           }]);
-        } else {
+        } else if (isAudio) {
           const base64 = dataUrl.split(",")[1] ?? "";
-          const ext = file.name.split(".").pop()?.toLowerCase() ?? "mp3";
+          const format = file.type.includes("wav") ? "wav"
+            : file.type.includes("ogg") ? "ogg"
+            : file.type.includes("webm") ? "webm"
+            : "mp3";
           setAttachments((prev) => [...prev, {
             id: crypto.randomUUID(),
             name: file.name,
             mediaType: "audio",
             data: base64,
             mimeType: file.type,
-            format: ext,
+            format,
           }]);
         }
       };
@@ -300,7 +313,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
     const [provider] = activeModel.split("/");
     const now = Date.now();
     const convoBase: Conversation = activeConv ?? { id: convId, title: "", provider, model: activeModel, messages: [], createdAt: now, updatedAt: now };
-    conversationStore.upsert({ ...convoBase, messages: next as never });
+    conversationStore.upsert({ ...convoBase, messages: next as StoredMessage[] });
     setConversations(conversationStore.list());
 
     const assistantIdx = next.length;
@@ -347,12 +360,7 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
                   ? { ...m, content: (m.content as string) + delta }
                   : m
               );
-              const now = Date.now();
-              if (now - lastSaveRef.current >= 500) {
-                conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
-                setConversations(conversationStore.list());
-                lastSaveRef.current = now;
-              }
+              setStreamingMessages([...latestMessages]);
             }
           } catch {
             // non-JSON line, ignore
@@ -363,26 +371,28 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
       if ((e as { name?: string }).name === "AbortError") {
         const last = latestMessages[latestMessages.length - 1];
         if (last?.role === "assistant" && last.content) {
-          conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
+          conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as StoredMessage[] });
           setConversations(conversationStore.list());
         }
+        setStreamingMessages(null);
         return;
       } else {
         setError(String(e));
         const trimmed = latestMessages.slice(0, -1);
-        conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as never });
+        conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as StoredMessage[] });
         setConversations(conversationStore.list());
       }
     } finally {
       setStreaming(false);
+      setStreamingMessages(null);
       abortRef.current = null;
     }
     const last = latestMessages[latestMessages.length - 1];
     if (last?.role === "assistant" && !last.content) {
       const trimmed = latestMessages.slice(0, -1);
-      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as never });
+      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: trimmed as StoredMessage[] });
     } else {
-      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as never });
+      conversationStore.upsert({ ...convoBase, id: convId, model: activeModel, messages: latestMessages as StoredMessage[] });
     }
     setConversations(conversationStore.list());
   };
@@ -396,7 +406,8 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
   }
 
   const modelsForProvider = selectedProvider ? (modelsByProvider[selectedProvider] ?? []) : [];
-  const currentMessages = activeConvId ? (conversationStore.get(activeConvId)?.messages ?? []) as Message[] : [];
+  const storedMessages = activeConvId ? (conversationStore.get(activeConvId)?.messages ?? []) as Message[] : [];
+  const currentMessages = streamingMessages ?? storedMessages;
 
   return (
     <div className="flex h-full">

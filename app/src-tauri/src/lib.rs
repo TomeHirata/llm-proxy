@@ -11,7 +11,7 @@ pub fn run() {
         .setup(|app| {
             // Start as menu-bar-only; tray must register before any window appears.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             build_tray(app)?;
 
@@ -48,6 +48,9 @@ pub fn run() {
             start_proxy,
             stop_proxy,
             proxy_status,
+            read_agent_configs,
+            apply_agent_config,
+            reset_agent_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running llmproxy app");
@@ -185,4 +188,329 @@ async fn proxy_status() -> bool {
         .await
         .map(|r| r.status().is_success())
         .unwrap_or(false)
+}
+
+// ── Agent config helpers ────────────────────────────────────────────────────
+
+fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+}
+
+#[derive(serde::Serialize)]
+struct AgentStatus {
+    config_path: String,
+    config_exists: bool,
+    active: bool,
+    model: String,
+}
+
+fn read_claude_code_status() -> AgentStatus {
+    let path = home_dir().join(".claude").join("settings.json");
+    let config_path = path.to_string_lossy().to_string();
+    if !path.exists() {
+        return AgentStatus {
+            config_path,
+            config_exists: false,
+            active: false,
+            model: String::new(),
+        };
+    }
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+    let active =
+        json["env"]["ANTHROPIC_BASE_URL"].as_str() == Some("http://localhost:8080/anthropic");
+    let model = json["model"].as_str().unwrap_or("").to_string();
+    AgentStatus {
+        config_path,
+        config_exists: true,
+        active,
+        model,
+    }
+}
+
+fn read_codex_status() -> AgentStatus {
+    let path = home_dir().join(".codex").join("config.toml");
+    let config_path = path.to_string_lossy().to_string();
+    if !path.exists() {
+        return AgentStatus {
+            config_path,
+            config_exists: false,
+            active: false,
+            model: String::new(),
+        };
+    }
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let val: toml::Value =
+        toml::from_str(&raw).unwrap_or(toml::Value::Table(toml::map::Map::new()));
+    let active = val
+        .get("model_providers")
+        .and_then(|mp| mp.get("llmproxy"))
+        .and_then(|p| p.get("base_url"))
+        .and_then(|v| v.as_str())
+        == Some("http://localhost:8080/openai/v1");
+    let model = val
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    AgentStatus {
+        config_path,
+        config_exists: true,
+        active,
+        model,
+    }
+}
+
+fn read_gemini_status() -> AgentStatus {
+    let path = home_dir().join(".gemini").join(".env");
+    let config_path = path.to_string_lossy().to_string();
+    if !path.exists() {
+        return AgentStatus {
+            config_path,
+            config_exists: false,
+            active: false,
+            model: String::new(),
+        };
+    }
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut active = false;
+    let mut model = String::new();
+    for line in raw.lines() {
+        if let Some(val) = line.strip_prefix("GOOGLE_GEMINI_BASE_URL=") {
+            active = val == "http://localhost:8080/gemini";
+        } else if let Some(val) = line.strip_prefix("GEMINI_MODEL=") {
+            model = val.to_string();
+        }
+    }
+    AgentStatus {
+        config_path,
+        config_exists: true,
+        active,
+        model,
+    }
+}
+
+#[tauri::command]
+fn read_agent_configs() -> serde_json::Value {
+    serde_json::json!({
+        "claude_code": read_claude_code_status(),
+        "codex": read_codex_status(),
+        "gemini": read_gemini_status(),
+    })
+}
+
+#[tauri::command]
+fn apply_agent_config(agent: String, model: String) -> Result<(), String> {
+    match agent.as_str() {
+        "claude_code" => apply_claude_code(&model),
+        "codex" => apply_codex(&model),
+        "gemini" => apply_gemini(&model),
+        _ => Err(format!("unknown agent: {agent}")),
+    }
+}
+
+fn apply_claude_code(model: &str) -> Result<(), String> {
+    let path = home_dir().join(".claude").join("settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+
+    let mut json: serde_json::Value = if path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let env = json["env"].take();
+    let mut env_map = if let serde_json::Value::Object(m) = env {
+        m
+    } else {
+        serde_json::Map::new()
+    };
+    env_map.insert(
+        "ANTHROPIC_BASE_URL".into(),
+        serde_json::Value::String("http://localhost:8080/anthropic".into()),
+    );
+    env_map.insert(
+        "ANTHROPIC_API_KEY".into(),
+        serde_json::Value::String("llmproxy".into()),
+    );
+    env_map.insert(
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
+        serde_json::Value::String(model.into()),
+    );
+    env_map.insert(
+        "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
+        serde_json::Value::String(model.into()),
+    );
+    env_map.insert(
+        "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
+        serde_json::Value::String(model.into()),
+    );
+    json["env"] = serde_json::Value::Object(env_map);
+    json["model"] = serde_json::Value::String(model.into());
+
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn apply_codex(model: &str) -> Result<(), String> {
+    let path = home_dir().join(".codex").join("config.toml");
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+
+    let mut table: toml::map::Map<String, toml::Value> = if path.exists() {
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        match toml::from_str::<toml::Value>(&raw) {
+            Ok(toml::Value::Table(t)) => t,
+            _ => toml::map::Map::new(),
+        }
+    } else {
+        toml::map::Map::new()
+    };
+
+    table.insert(
+        "model_provider".into(),
+        toml::Value::String("llmproxy".into()),
+    );
+    table.insert("model".into(), toml::Value::String(model.into()));
+    table.insert("api_key".into(), toml::Value::String("llmproxy".into()));
+    table.insert(
+        "disable_response_storage".into(),
+        toml::Value::Boolean(true),
+    );
+
+    // [model_providers.llmproxy]
+    let mut provider = toml::map::Map::new();
+    provider.insert("name".into(), toml::Value::String("llmproxy".into()));
+    provider.insert(
+        "base_url".into(),
+        toml::Value::String("http://localhost:8080/openai/v1".into()),
+    );
+    provider.insert("wire_api".into(), toml::Value::String("responses".into()));
+    provider.insert("requires_openai_auth".into(), toml::Value::Boolean(true));
+
+    let mut model_providers = toml::map::Map::new();
+    model_providers.insert("llmproxy".into(), toml::Value::Table(provider));
+    table.insert(
+        "model_providers".into(),
+        toml::Value::Table(model_providers),
+    );
+
+    std::fs::write(
+        &path,
+        toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn apply_gemini(model: &str) -> Result<(), String> {
+    let dir = home_dir().join(".gemini");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(".env");
+
+    // Preserve unrelated lines; replace or append our keys.
+    let existing = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+    let our_keys = [
+        "GOOGLE_GEMINI_BASE_URL=",
+        "GEMINI_MODEL=",
+        "GEMINI_API_KEY=",
+    ];
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
+        .map(str::to_string)
+        .collect();
+    lines.push(format!(
+        "GOOGLE_GEMINI_BASE_URL=http://localhost:8080/gemini"
+    ));
+    lines.push(format!("GEMINI_MODEL={model}"));
+    lines.push(format!("GEMINI_API_KEY=llmproxy"));
+
+    std::fs::write(&path, lines.join("\n") + "\n").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reset_agent_config(agent: String) -> Result<(), String> {
+    match agent.as_str() {
+        "claude_code" => reset_claude_code(),
+        "codex" => reset_codex(),
+        "gemini" => reset_gemini(),
+        _ => Err(format!("unknown agent: {agent}")),
+    }
+}
+
+fn reset_claude_code() -> Result<(), String> {
+    let path = home_dir().join(".claude").join("settings.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut json: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(env) = json["env"].as_object_mut() {
+        env.remove("ANTHROPIC_BASE_URL");
+        env.remove("ANTHROPIC_API_KEY");
+        env.remove("ANTHROPIC_DEFAULT_HAIKU_MODEL");
+        env.remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
+        env.remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
+    }
+    json.as_object_mut().map(|o| o.remove("model"));
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn reset_codex() -> Result<(), String> {
+    let path = home_dir().join(".codex").join("config.toml");
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut table: toml::map::Map<String, toml::Value> = match toml::from_str::<toml::Value>(&raw) {
+        Ok(toml::Value::Table(t)) => t,
+        _ => return Ok(()),
+    };
+    table.remove("model_provider");
+    table.remove("model");
+    table.remove("api_key");
+    table.remove("disable_response_storage");
+    if let Some(toml::Value::Table(ref mut mp)) = table.get_mut("model_providers") {
+        mp.remove("llmproxy");
+        if mp.is_empty() {
+            table.remove("model_providers");
+        }
+    }
+    std::fs::write(
+        &path,
+        toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn reset_gemini() -> Result<(), String> {
+    let path = home_dir().join(".gemini").join(".env");
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let our_keys = [
+        "GOOGLE_GEMINI_BASE_URL=",
+        "GEMINI_MODEL=",
+        "GEMINI_API_KEY=",
+    ];
+    let filtered: Vec<&str> = raw
+        .lines()
+        .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
+        .collect();
+    std::fs::write(&path, filtered.join("\n") + "\n").map_err(|e| e.to_string())
 }

@@ -26,6 +26,9 @@ pub struct PassthroughProvider {
     client: reqwest::Client,
     base_url: String,
     auth_header: AuthHeader,
+    /// OpenAI deprecated `max_tokens` in favour of `max_completion_tokens`.
+    /// Set true for OpenAI; leave false for other providers that still use max_tokens.
+    use_max_completion_tokens: bool,
 }
 
 impl PassthroughProvider {
@@ -38,11 +41,15 @@ impl PassthroughProvider {
             client,
             base_url: base_url.into(),
             auth_header,
+            use_max_completion_tokens: false,
         }
     }
 
     pub fn openai() -> Self {
-        Self::new("https://api.openai.com/v1", AuthHeader::Bearer)
+        Self {
+            use_max_completion_tokens: true,
+            ..Self::new("https://api.openai.com/v1", AuthHeader::Bearer)
+        }
     }
 
     pub fn mistral() -> Self {
@@ -83,7 +90,7 @@ impl PassthroughProvider {
         }
     }
 
-    fn build_body(req: &ChatRequest, model_id: &str, stream: bool) -> serde_json::Value {
+    fn build_body(&self, req: &ChatRequest, model_id: &str, stream: bool) -> serde_json::Value {
         let mut body = serde_json::to_value(req).unwrap_or_else(|_| serde_json::json!({}));
         body["model"] = serde_json::json!(model_id);
         if stream {
@@ -94,6 +101,16 @@ impl PassthroughProvider {
             // Clear any client-sent "stream: true" since the caller asked for non-streaming.
             if let Some(obj) = body.as_object_mut() {
                 obj.remove("stream");
+            }
+        }
+        // OpenAI deprecated max_tokens in favour of max_completion_tokens.
+        if self.use_max_completion_tokens {
+            if let Some(obj) = body.as_object_mut() {
+                if let Some(v) = obj.remove("max_tokens") {
+                    if !v.is_null() {
+                        obj.insert("max_completion_tokens".into(), v);
+                    }
+                }
             }
         }
         body
@@ -109,7 +126,7 @@ impl Provider for PassthroughProvider {
         cred: &Credential,
     ) -> Result<ChatResponse, ProxyError> {
         let token = Self::bearer(cred)?;
-        let body = Self::build_body(&req, model_id, false);
+        let body = self.build_body(&req, model_id, false);
 
         let rb = self
             .client
@@ -132,7 +149,7 @@ impl Provider for PassthroughProvider {
         cred: &Credential,
     ) -> Result<BoxStream<'static, Result<Bytes, ProxyError>>, ProxyError> {
         let token = Self::bearer(cred)?;
-        let body = Self::build_body(&req, model_id, true);
+        let body = self.build_body(&req, model_id, true);
 
         let rb = self
             .client
@@ -177,6 +194,17 @@ impl AzurePassthrough {
             )),
         }
     }
+
+    fn build_body(req: &ChatRequest, model_id: &str, stream: bool) -> serde_json::Value {
+        // Azure also uses max_completion_tokens for newer deployments.
+        let stub = PassthroughProvider {
+            client: reqwest::Client::new(),
+            base_url: String::new(),
+            auth_header: AuthHeader::ApiKey,
+            use_max_completion_tokens: true,
+        };
+        stub.build_body(req, model_id, stream)
+    }
 }
 
 #[async_trait]
@@ -188,7 +216,7 @@ impl Provider for AzurePassthrough {
         cred: &Credential,
     ) -> Result<ChatResponse, ProxyError> {
         let token = Self::bearer(cred)?;
-        let body = PassthroughProvider::build_body(&req, model_id, false);
+        let body = Self::build_body(&req, model_id, false);
 
         let resp = self
             .client
@@ -213,7 +241,7 @@ impl Provider for AzurePassthrough {
         cred: &Credential,
     ) -> Result<BoxStream<'static, Result<Bytes, ProxyError>>, ProxyError> {
         let token = Self::bearer(cred)?;
-        let body = PassthroughProvider::build_body(&req, model_id, true);
+        let body = Self::build_body(&req, model_id, true);
 
         let resp = self
             .client
@@ -263,15 +291,37 @@ mod tests {
 
     #[test]
     fn build_body_overwrites_model() {
-        let body = PassthroughProvider::build_body(&dummy_req(), "gpt-4o", false);
+        let p = PassthroughProvider::openai();
+        let body = p.build_body(&dummy_req(), "gpt-4o", false);
         assert_eq!(body["model"], "gpt-4o");
         assert!(body.get("stream").is_none());
     }
 
     #[test]
     fn build_body_sets_stream_flag() {
-        let body = PassthroughProvider::build_body(&dummy_req(), "gpt-4o", true);
+        let p = PassthroughProvider::openai();
+        let body = p.build_body(&dummy_req(), "gpt-4o", true);
         assert_eq!(body["stream"], true);
+    }
+
+    #[test]
+    fn build_body_renames_max_tokens_for_openai() {
+        let mut req = dummy_req();
+        req.max_tokens = Some(100);
+        let p = PassthroughProvider::openai();
+        let body = p.build_body(&req, "gpt-4o", false);
+        assert!(body.get("max_tokens").is_none());
+        assert_eq!(body["max_completion_tokens"], 100);
+    }
+
+    #[test]
+    fn build_body_keeps_max_tokens_for_others() {
+        let mut req = dummy_req();
+        req.max_tokens = Some(100);
+        let p = PassthroughProvider::mistral();
+        let body = p.build_body(&req, "mistral-large", false);
+        assert_eq!(body["max_tokens"], 100);
+        assert!(body.get("max_completion_tokens").is_none());
     }
 
     #[test]
