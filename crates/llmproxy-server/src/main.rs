@@ -1,5 +1,6 @@
 mod admin;
 mod config;
+mod cross_provider;
 mod registry;
 mod server;
 mod usage_log;

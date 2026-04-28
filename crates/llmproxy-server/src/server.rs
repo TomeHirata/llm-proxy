@@ -2,7 +2,7 @@ use std::{convert::Infallible, sync::Arc, time::Instant};
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, RawQuery, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -17,6 +17,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
     config::AppConfig,
+    cross_provider,
     registry::ProviderRegistry,
     usage_log::{self, UsageEntry, UsageStore},
 };
@@ -360,6 +361,19 @@ async fn anthropic_messages_handler(
     let started = Instant::now();
     let request_body_str = String::from_utf8_lossy(&body).into_owned();
 
+    // Parse raw model from body to check if it's a cross-provider canonical model.
+    let raw_model = serde_json::from_str::<serde_json::Value>(&request_body_str)
+        .ok()
+        .and_then(|v| v["model"].as_str().map(str::to_string))
+        .unwrap_or_default();
+
+    // Non-anthropic canonical prefix (e.g. "openai/gpt-4o"): route cross-provider.
+    if let Some(prefix) = raw_model.split('/').next() {
+        if raw_model.contains('/') && prefix != "anthropic" {
+            return anthropic_cross_provider(state, headers, body, raw_model).await;
+        }
+    }
+
     // Strip canonical provider/ prefix (e.g. "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6")
     // so the model ID forwarded to Anthropic's API is always a bare model name.
     let (model_id, body) = match serde_json::from_str::<serde_json::Value>(&request_body_str) {
@@ -587,14 +601,156 @@ async fn gemini_generate_content_handler(
     .await
 }
 
-// Handles canonical "provider/model" format: /gemini/v1beta/models/:_provider/:model_id/generateContent
+// Handles canonical "provider/model" format: /gemini/v1beta/models/:provider/:model_id/generateContent
 async fn gemini_canonical_handler(
     State(state): State<AppState>,
-    Path((_provider, model_id)): Path<(String, String)>,
+    Path((provider, model_id)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    gemini_generate_content_handler(State(state), Path(model_id), headers, body).await
+    if provider == "gemini" {
+        // Strip the redundant "gemini/" prefix and forward as native Gemini.
+        gemini_generate_content_handler(State(state), Path(model_id), headers, body).await
+    } else {
+        // Cross-provider: translate Gemini request → route to any provider.
+        let canonical = format!("{provider}/{model_id}");
+        gemini_cross_provider(state, headers, query, body, canonical).await
+    }
+}
+
+// ─── Cross-provider dispatch helpers ────────────────────────────────────────
+
+/// Handle a Claude Code request destined for a non-Anthropic provider.
+/// Translates the Anthropic /v1/messages format into a ChatRequest, routes it
+/// through the provider registry, and returns an Anthropic-format response.
+async fn anthropic_cross_provider(
+    state: AppState,
+    headers: HeaderMap,
+    body: Bytes,
+    canonical_model: String,
+) -> Response {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let mut req = match cross_provider::anthropic_to_chat_request(&body) {
+        Ok(r) => r,
+        Err(e) => return proxy_error_to_response(&e),
+    };
+    req.model = canonical_model.clone();
+
+    let (provider, model_id, cred) =
+        match state.registry.resolve(&canonical_model, auth.as_deref()) {
+            Ok(r) => r,
+            Err(e) => return proxy_error_to_response(&e),
+        };
+
+    if req.stream.unwrap_or(false) {
+        match provider.chat_stream(req, &model_id, &cred).await {
+            Ok(stream) => {
+                let mut adapter = cross_provider::AnthropicStreamAdapter::new(&model_id);
+                let adapted = stream.flat_map(move |item| {
+                    let chunks = match item {
+                        Ok(b) => adapter.process(b),
+                        Err(e) => {
+                            let msg = format!(
+                                "event: error\ndata: {{\"type\":\"error\",\"error\":{{\"message\":\"{}\"}}}}\n\n",
+                                e
+                            );
+                            vec![Bytes::from(msg)]
+                        }
+                    };
+                    futures::stream::iter(chunks.into_iter().map(Ok::<_, Infallible>))
+                });
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .header("cache-control", "no-cache")
+                    .header("connection", "keep-alive")
+                    .body(Body::from_stream(adapted))
+                    .unwrap()
+            }
+            Err(e) => proxy_error_to_response(&e),
+        }
+    } else {
+        match provider.chat(req, &model_id, &cred).await {
+            Ok(resp) => Response::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    cross_provider::chat_response_to_anthropic(&resp).to_string(),
+                ))
+                .unwrap(),
+            Err(e) => proxy_error_to_response(&e),
+        }
+    }
+}
+
+/// Handle a Gemini CLI request destined for a non-Gemini provider.
+/// Translates the Gemini generateContent format into a ChatRequest, routes it
+/// through the provider registry, and returns a Gemini-format response.
+async fn gemini_cross_provider(
+    state: AppState,
+    headers: HeaderMap,
+    query: Option<String>,
+    body: Bytes,
+    canonical_model: String,
+) -> Response {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let want_stream = query
+        .as_deref()
+        .map(|q| q.contains("alt=sse"))
+        .unwrap_or(false);
+
+    let mut req = match cross_provider::gemini_to_chat_request(&canonical_model, &body) {
+        Ok(r) => r,
+        Err(e) => return proxy_error_to_response(&e),
+    };
+    req.stream = if want_stream { Some(true) } else { None };
+
+    let (provider, model_id, cred) =
+        match state.registry.resolve(&canonical_model, auth.as_deref()) {
+            Ok(r) => r,
+            Err(e) => return proxy_error_to_response(&e),
+        };
+
+    if want_stream {
+        match provider.chat_stream(req, &model_id, &cred).await {
+            Ok(stream) => {
+                let mut adapter = cross_provider::GeminiStreamAdapter::new(&model_id);
+                let adapted = stream.flat_map(move |item| {
+                    let chunks = match item {
+                        Ok(b) => adapter.process(b),
+                        Err(e) => {
+                            let msg =
+                                format!("data: {{\"error\": \"{e}\"}}\n\n");
+                            vec![Bytes::from(msg)]
+                        }
+                    };
+                    futures::stream::iter(chunks.into_iter().map(Ok::<_, Infallible>))
+                });
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .header("cache-control", "no-cache")
+                    .body(Body::from_stream(adapted))
+                    .unwrap()
+            }
+            Err(e) => proxy_error_to_response(&e),
+        }
+    } else {
+        match provider.chat(req, &model_id, &cred).await {
+            Ok(resp) => Response::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    cross_provider::chat_response_to_gemini(&resp).to_string(),
+                ))
+                .unwrap(),
+            Err(e) => proxy_error_to_response(&e),
+        }
+    }
 }
 
 fn proxy_error_to_response(err: &ProxyError) -> Response {
