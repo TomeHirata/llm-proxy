@@ -229,7 +229,9 @@ fn read_codex_status() -> AgentStatus {
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
     let val: toml::Value = toml::from_str(&raw)
         .unwrap_or(toml::Value::Table(toml::map::Map::new()));
-    let active = val.get("openai_base_url").and_then(|v| v.as_str())
+    let active = val
+        .get("model_providers").and_then(|mp| mp.get("llmproxy"))
+        .and_then(|p| p.get("base_url")).and_then(|v| v.as_str())
         == Some("http://localhost:8080/openai");
     let model = val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
     AgentStatus { config_path, config_exists: true, active, model }
@@ -311,10 +313,22 @@ fn apply_codex(model: &str) -> Result<(), String> {
         toml::map::Map::new()
     };
 
+    table.insert("model_provider".into(), toml::Value::String("llmproxy".into()));
     table.insert("model".into(), toml::Value::String(model.into()));
-    table.insert("openai_base_url".into(),
-        toml::Value::String("http://localhost:8080/openai".into()));
     table.insert("api_key".into(), toml::Value::String("llmproxy".into()));
+    table.insert("disable_response_storage".into(), toml::Value::Boolean(true));
+
+    // [model_providers.llmproxy]
+    let mut provider = toml::map::Map::new();
+    provider.insert("name".into(), toml::Value::String("llmproxy".into()));
+    provider.insert("base_url".into(),
+        toml::Value::String("http://localhost:8080/openai".into()));
+    provider.insert("wire_api".into(), toml::Value::String("responses".into()));
+    provider.insert("requires_openai_auth".into(), toml::Value::Boolean(true));
+
+    let mut model_providers = toml::map::Map::new();
+    model_providers.insert("llmproxy".into(), toml::Value::Table(provider));
+    table.insert("model_providers".into(), toml::Value::Table(model_providers));
 
     std::fs::write(&path,
         toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?)
@@ -373,9 +387,16 @@ fn reset_codex() -> Result<(), String> {
             Ok(toml::Value::Table(t)) => t,
             _ => return Ok(()),
         };
+    table.remove("model_provider");
     table.remove("model");
-    table.remove("openai_base_url");
     table.remove("api_key");
+    table.remove("disable_response_storage");
+    if let Some(toml::Value::Table(ref mut mp)) = table.get_mut("model_providers") {
+        mp.remove("llmproxy");
+        if mp.is_empty() {
+            table.remove("model_providers");
+        }
+    }
     std::fs::write(&path,
         toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())
