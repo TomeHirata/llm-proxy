@@ -33,6 +33,8 @@ without touching the terminal.
 | **Usage** — live request stats by provider and model | **Providers** — configure API keys or sign in via OAuth (Anthropic, Databricks) |
 | ![Agents tab](docs/screenshots/agents.png) | ![Chat tab](docs/screenshots/chat.png) |
 | **Agents** — route Claude Code, Codex CLI, and Gemini CLI through any provider | **Chat** — test any provider and model directly from the app |
+| ![Settings tab](docs/screenshots/settings.png) | |
+| **Settings** — server info, version, uptime, and quick-start reference | |
 
 ### Install (DMG)
 
@@ -90,10 +92,10 @@ npm run tauri dev
 | `gemini`       | translation + SSE                           | `GEMINI_API_KEY` / header / config                  |
 | `bedrock`      | Converse API, SigV4-signed                  | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` |
 | `databricks`   | passthrough                                 | `endpoint` + PAT / OAuth                            |
-| `copilot`      | passthrough                                 | GitHub Copilot OAuth                                |
-| `codex_oauth`  | passthrough                                 | OpenAI Codex OAuth                                  |
 
 All providers support both non-streaming and streaming (`stream: true`).
+
+GitHub Copilot and OpenAI Codex can also be authenticated via OAuth through the desktop app's **Providers** tab. Their tokens are managed by the app and used automatically when routing requests.
 
 ## Routing
 
