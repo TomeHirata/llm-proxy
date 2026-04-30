@@ -3,8 +3,8 @@
 Localhost LLM proxy — OpenAI-compatible API, no Python required.
 
 Point any OpenAI SDK at `http://localhost:8080/v1` and route to OpenAI,
-Anthropic, Gemini, AWS Bedrock, Azure OpenAI, Mistral, or TogetherAI by
-prefixing the model with a provider name:
+Anthropic, Gemini, AWS Bedrock, Azure OpenAI, Mistral, TogetherAI, or
+Databricks Model Serving by prefixing the model with a provider name:
 
 ```python
 from openai import OpenAI
@@ -20,7 +20,57 @@ variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) or passed per-request in
 the `Authorization: Bearer …` header. A YAML config file (§ Config below) is
 supported if you'd rather keep keys out of your shell environment.
 
-## Supported providers (v0.1)
+## Desktop app
+
+The macOS desktop app lives in your menu bar and gives you a full dashboard
+without touching the terminal.
+
+**[Download the latest DMG →](https://github.com/TomeHirata/llm-proxy/releases/latest)**
+
+| | |
+|---|---|
+| ![Usage tab](docs/screenshots/usage.png) | ![Providers tab](docs/screenshots/providers.png) |
+| **Usage** — live request stats by provider and model | **Providers** — configure API keys or sign in via OAuth (Anthropic, Databricks) |
+| ![Agents tab](docs/screenshots/agents.png) | ![Chat tab](docs/screenshots/chat.png) |
+| **Agents** — route Claude Code, Codex CLI, and Gemini CLI through any provider | **Chat** — test any provider and model directly from the app |
+
+### Install (DMG)
+
+1. Download `llmproxy_x.y.z_aarch64.dmg` from the [releases page](https://github.com/TomeHirata/llm-proxy/releases/latest).
+2. Open the DMG, drag **llmproxy** to Applications.
+3. Launch — the app appears in your menu bar.
+4. If macOS blocks the app on first launch, run:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/llmproxy.app
+   ```
+
+The app starts the proxy daemon automatically and restarts it when you change credentials. Click the menu-bar icon to open the dashboard.
+
+### Build from source
+
+Requires Node.js 18+ and Rust (install via [rustup](https://rustup.rs)).
+
+```bash
+git clone https://github.com/TomeHirata/llm-proxy
+cd llm-proxy
+
+# Build the CLI sidecar and the .app bundle
+cd app && npm install
+CI=true npx tauri build
+
+# Install
+cp -r ../target/release/bundle/macos/llmproxy.app /Applications/
+xattr -dr com.apple.quarantine /Applications/llmproxy.app
+open /Applications/llmproxy.app
+```
+
+**Dev mode** (hot-reload):
+```bash
+cd app
+npm run tauri dev
+```
+
+## Supported providers
 
 | Provider key   | Transport                                   | Credential source                                   |
 |----------------|---------------------------------------------|-----------------------------------------------------|
@@ -28,13 +78,16 @@ supported if you'd rather keep keys out of your shell environment.
 | `azure`        | passthrough (`api-key` header, per-deploy)  | `endpoint` + `api_version` + key in config          |
 | `mistral`      | passthrough                                 | `MISTRAL_API_KEY` / header / config                 |
 | `togetherai`   | passthrough                                 | `TOGETHERAI_API_KEY` / header / config              |
-| `anthropic`    | translation + SSE                           | `ANTHROPIC_API_KEY` / header / config               |
+| `anthropic`    | translation + SSE                           | `ANTHROPIC_API_KEY` / header / config / OAuth       |
 | `gemini`       | translation + SSE                           | `GEMINI_API_KEY` / header / config                  |
 | `bedrock`      | Converse API, SigV4-signed                  | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` |
+| `databricks`   | passthrough                                 | `endpoint` + PAT / OAuth                            |
+| `copilot`      | passthrough                                 | GitHub Copilot OAuth                                |
+| `codex_oauth`  | passthrough                                 | OpenAI Codex OAuth                                  |
 
 All providers support both non-streaming and streaming (`stream: true`).
 
-## Install
+## Install (CLI)
 
 ### macOS (universal binary — Intel + Apple Silicon)
 
@@ -81,41 +134,6 @@ curl -L "https://github.com/TomeHirata/llm-proxy/releases/download/${VERSION}/ll
   | tar -xz
 sudo mv "llmproxy-${VERSION}-x86_64-unknown-linux-gnu/llmproxy" /usr/local/bin/llmproxy
 # For arm64: replace x86_64-unknown-linux-gnu with aarch64-unknown-linux-gnu
-```
-
-### macOS desktop app (menu-bar UI)
-
-Requires Node.js 18+ and Rust (install via [rustup](https://rustup.rs)).
-
-```bash
-git clone https://github.com/TomeHirata/llm-proxy
-cd llm-proxy
-
-# 1. Build the CLI binary and place it as a sidecar inside the app bundle
-./scripts/prepare-sidecar.sh --release
-
-# 2. Build the .app bundle
-cd app
-npm install
-npm run tauri build
-
-# 3. Install
-cp -r src-tauri/target/release/bundle/macos/llmproxy.app /Applications/
-
-# 4. Clear Gatekeeper quarantine (required until the app is code-signed)
-xattr -dr com.apple.quarantine /Applications/llmproxy.app
-
-# 5. Launch — the app appears in your menu bar
-open /Applications/llmproxy.app
-```
-
-The menu-bar icon lets you start/stop the proxy and open the dashboard
-(usage stats + API key config). No separate `llmproxy serve` needed.
-
-**Dev mode** (hot-reload):
-```bash
-cd app
-npm run tauri dev   # runs prepare-sidecar (debug build) + Vite + Tauri
 ```
 
 ### From source (CLI only)
@@ -170,14 +188,15 @@ Every request's `model` field is parsed as `provider/model_id` on the first
 `/`. Model IDs containing slashes — e.g. Bedrock cross-region ARNs like
 `us.anthropic.claude-3-5-sonnet-20241022-v2:0` — are preserved verbatim.
 
-| `model` field                           | Provider  | Upstream model id                   |
-|-----------------------------------------|-----------|-------------------------------------|
-| `openai/gpt-4o`                         | OpenAI    | `gpt-4o`                            |
-| `anthropic/claude-sonnet-4-5`           | Anthropic | `claude-sonnet-4-5`                 |
-| `gemini/gemini-2.5-flash`               | Gemini    | `gemini-2.5-flash`                  |
-| `bedrock/amazon.nova-pro-v1:0`          | Bedrock   | `amazon.nova-pro-v1:0`              |
-| `azure/my-gpt4-deployment`              | Azure     | `my-gpt4-deployment` (deployment)   |
-| `mistral/mistral-large-latest`          | Mistral   | `mistral-large-latest`              |
+| `model` field                           | Provider    | Upstream model id                   |
+|-----------------------------------------|-------------|-------------------------------------|
+| `openai/gpt-4o`                         | OpenAI      | `gpt-4o`                            |
+| `anthropic/claude-sonnet-4-5`           | Anthropic   | `claude-sonnet-4-5`                 |
+| `gemini/gemini-2.5-flash`               | Gemini      | `gemini-2.5-flash`                  |
+| `bedrock/amazon.nova-pro-v1:0`          | Bedrock     | `amazon.nova-pro-v1:0`              |
+| `azure/my-gpt4-deployment`              | Azure       | `my-gpt4-deployment` (deployment)   |
+| `mistral/mistral-large-latest`          | Mistral     | `mistral-large-latest`              |
+| `databricks/databricks-gpt-5`          | Databricks  | `databricks-gpt-5`                  |
 
 ### Credential resolution
 
@@ -222,6 +241,9 @@ providers:
     api_key: ${AZURE_OPENAI_API_KEY}
     endpoint: https://my-resource.openai.azure.com
     api_version: "2024-02-01"
+  databricks:
+    endpoint: https://my-workspace.azuredatabricks.net
+    api_key: ${DATABRICKS_TOKEN}
 ```
 
 See `config.example.yaml` for the full schema.
@@ -230,7 +252,7 @@ See `config.example.yaml` for the full schema.
 
 ### Claude Code
 
-Route Claude Code through the proxy to track usage and latency:
+Route Claude Code through the proxy to use any provider and track usage:
 
 ```bash
 llmproxy serve --daemon
@@ -238,11 +260,20 @@ export ANTHROPIC_BASE_URL="http://localhost:8080/anthropic"
 claude
 ```
 
-Then inspect what was sent:
+Or use the **Agents tab** in the desktop app to configure this with one click.
+
+### OpenAI Codex CLI
 
 ```bash
-llmproxy usage summary
-llmproxy usage recent --verbose
+export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
+codex
+```
+
+### Gemini CLI
+
+```bash
+export GOOGLE_GEMINI_BASE_URL="http://localhost:8080/gemini"
+gemini
 ```
 
 ### Cursor / VS Code Copilot
@@ -265,10 +296,11 @@ export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
 ## Project layout
 
 ```
+app/                         # Tauri desktop app (React + Rust)
 crates/
-├── llmproxy-core/       # OpenAI types, Provider trait, Credential, errors
-├── llmproxy-providers/  # Passthrough, Anthropic, Gemini, Bedrock implementations
-└── llmproxy-server/     # Axum server, config, registry, CLI
+├── llmproxy-core/           # OpenAI types, Provider trait, Credential, errors
+├── llmproxy-providers/      # Passthrough, Anthropic, Gemini, Bedrock implementations
+└── llmproxy-server/         # Axum server, config, registry, CLI
 ```
 
 Dependency direction: `server → providers → core`.
@@ -284,9 +316,9 @@ cargo build --release -p llmproxy-server
 
 ## Roadmap
 
-- **v0.1** (this release) — OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral,
-  TogetherAI. Chat + streaming (all providers). Daemon + autostart on macOS/Linux.
-- **v0.2** — Cohere, HuggingFace TGI, `/v1/embeddings`.
-- **v0.3** — MLflow Model Serving, AI21Labs.
-- **v1.0** — JSONL request log, full tool-call passthrough for translation
-  providers.
+- **v0.1** — OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral, TogetherAI.
+  Chat + streaming. Daemon + autostart on macOS/Linux.
+- **v0.2** — Databricks Model Serving, GitHub Copilot OAuth, OpenAI Codex OAuth,
+  desktop app with usage dashboard, provider config, agents routing, and built-in chat.
+- **v0.3** — Cohere, HuggingFace TGI, `/v1/embeddings`.
+- **v1.0** — JSONL request log, full tool-call passthrough for translation providers.
