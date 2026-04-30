@@ -10,6 +10,10 @@ struct OAuthStore {
     copilot: Option<CopilotCreds>,
     #[serde(default)]
     codex: Option<CodexCreds>,
+    #[serde(default)]
+    databricks: Option<DatabricksCreds>,
+    #[serde(default)]
+    anthropic: Option<AnthropicCreds>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -22,12 +26,29 @@ struct CodexCreds {
     refresh_token: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct DatabricksCreds {
+    workspace_url: String,
+    refresh_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AnthropicCreds {
+    refresh_token: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OAuthTokens {
     /// Long-lived GitHub OAuth token; used to mint short-lived Copilot tokens.
     pub copilot_github_token: Option<String>,
     /// Long-lived OpenAI refresh token; used to refresh short-lived access tokens.
     pub codex_refresh_token: Option<String>,
+    /// Databricks workspace URL; required alongside the refresh token.
+    pub databricks_workspace_url: Option<String>,
+    /// Long-lived Databricks refresh token; used to refresh short-lived access tokens.
+    pub databricks_refresh_token: Option<String>,
+    /// Long-lived Anthropic refresh token; used to refresh short-lived access tokens.
+    pub anthropic_refresh_token: Option<String>,
 }
 
 impl OAuthTokens {
@@ -53,6 +74,9 @@ impl OAuthTokens {
         Self {
             copilot_github_token: store.copilot.map(|c| c.github_token),
             codex_refresh_token: store.codex.map(|c| c.refresh_token),
+            databricks_workspace_url: store.databricks.as_ref().map(|c| c.workspace_url.clone()),
+            databricks_refresh_token: store.databricks.map(|c| c.refresh_token),
+            anthropic_refresh_token: store.anthropic.map(|c| c.refresh_token),
         }
     }
 }

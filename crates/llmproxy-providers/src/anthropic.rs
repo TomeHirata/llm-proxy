@@ -263,11 +263,11 @@ impl Provider for AnthropicProvider {
     }
 }
 
-fn find_double_newline(buf: &[u8]) -> Option<usize> {
+pub(crate) fn find_double_newline(buf: &[u8]) -> Option<usize> {
     buf.windows(2).position(|w| w == b"\n\n")
 }
 
-fn translate_anthropic_event(
+pub(crate) fn translate_anthropic_event(
     event: &str,
     chat_id: &str,
     created: u64,
