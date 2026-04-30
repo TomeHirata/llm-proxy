@@ -36,15 +36,23 @@ without touching the terminal.
 
 ### Install (DMG)
 
-1. Download `llmproxy_x.y.z_aarch64.dmg` from the [releases page](https://github.com/TomeHirata/llm-proxy/releases/latest).
-2. Open the DMG, drag **llmproxy** to Applications.
-3. Launch — the app appears in your menu bar.
-4. If macOS blocks the app on first launch, run:
+> **Requires macOS on Apple Silicon (M1 or later).**
+
+1. Download `llmproxy_0.2.0_aarch64.dmg` from the [releases page](https://github.com/TomeHirata/llm-proxy/releases/latest).
+2. Open the DMG and drag **llmproxy** to your Applications folder.
+3. If macOS shows a security warning on first launch, clear the quarantine flag:
    ```bash
    xattr -dr com.apple.quarantine /Applications/llmproxy.app
    ```
+4. Open the app — a menu-bar icon appears. Click it to open the dashboard.
 
-The app starts the proxy daemon automatically and restarts it when you change credentials. Click the menu-bar icon to open the dashboard.
+The app starts the proxy daemon automatically on launch and restarts it whenever you change provider credentials. No separate `llmproxy serve` command is needed.
+
+**First-time setup:**
+1. Open the dashboard and click **Start** if the proxy isn't running yet.
+2. Go to **Providers** and add API keys (or sign in via OAuth for Anthropic or Databricks).
+3. Open **Chat** to verify everything works — pick a provider and send a message.
+4. Optionally go to **Agents** to route Claude Code, Codex CLI, or Gemini CLI through the proxy.
 
 ### Build from source
 
