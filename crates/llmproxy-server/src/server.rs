@@ -1438,10 +1438,10 @@ mod tests {
     /// Minimal AppState wired to a real (but unconfigured) registry so the
     /// credential-missing path returns 401 without hitting any upstream.
     fn state_no_creds() -> AppState {
-        use crate::{config::AppConfig, registry::ProviderRegistry};
+        use crate::{config::AppConfig, oauth_tokens::OAuthTokens, registry::ProviderRegistry};
         let cfg = AppConfig::default();
         AppState {
-            registry: std::sync::Arc::new(ProviderRegistry::from_config(&cfg)),
+            registry: std::sync::Arc::new(ProviderRegistry::from_config(&cfg, &OAuthTokens::default())),
             usage_store: None,
             http: reqwest::Client::new(),
             max_body_bytes: 1024,

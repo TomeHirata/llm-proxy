@@ -2334,6 +2334,8 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 name = "llmproxy-app"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
+ "chrono",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

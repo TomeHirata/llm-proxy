@@ -1,0 +1,180 @@
+//! Codex OAuth provider — wraps the OpenAI passthrough provider but
+//! automatically refreshes its access token using a stored refresh token.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use futures::{stream::BoxStream, StreamExt};
+use llmproxy_core::{
+    error::ProxyError,
+    openai_types::{ChatRequest, ChatResponse},
+    provider::{Credential, Provider},
+};
+use tokio::sync::RwLock;
+
+const OPENAI_BASE: &str = "https://api.openai.com/v1";
+const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+#[derive(Debug, Clone)]
+struct CachedToken {
+    token: String,
+    expires_at: i64,
+}
+
+impl CachedToken {
+    fn is_expiring_soon(&self) -> bool {
+        chrono::Utc::now().timestamp() > self.expires_at - 120
+    }
+}
+
+pub struct CodexOAuthProvider {
+    client: reqwest::Client,
+    refresh_token: String,
+    cache: Arc<RwLock<Option<CachedToken>>>,
+}
+
+impl CodexOAuthProvider {
+    pub fn new(refresh_token: impl Into<String>) -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(300))
+                .build()
+                .expect("reqwest client"),
+            refresh_token: refresh_token.into(),
+            cache: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    async fn get_token(&self) -> Result<String, ProxyError> {
+        {
+            let cache = self.cache.read().await;
+            if let Some(ref t) = *cache {
+                if !t.is_expiring_soon() {
+                    return Ok(t.token.clone());
+                }
+            }
+        }
+
+        let mut cache = self.cache.write().await;
+        if let Some(ref t) = *cache {
+            if !t.is_expiring_soon() {
+                return Ok(t.token.clone());
+            }
+        }
+
+        let fresh = self.refresh_access_token().await?;
+        let token_str = fresh.token.clone();
+        *cache = Some(fresh);
+        Ok(token_str)
+    }
+
+    async fn refresh_access_token(&self) -> Result<CachedToken, ProxyError> {
+        let resp = self
+            .client
+            .post(TOKEN_URL)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &self.refresh_token),
+                ("client_id", CLIENT_ID),
+                ("scope", "openid profile email"),
+            ])
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProxyError::Config(format!(
+                "Codex token refresh failed ({status}): {body}\n\
+                 Please re-authenticate via the llmproxy app."
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            access_token: String,
+            #[serde(default)]
+            expires_in: Option<i64>,
+        }
+        let body: Resp = resp.json().await.map_err(|e| {
+            ProxyError::Config(format!("Failed to parse Codex token: {e}"))
+        })?;
+
+        let expires_at = chrono::Utc::now().timestamp() + body.expires_in.unwrap_or(3600);
+        Ok(CachedToken { token: body.access_token, expires_at })
+    }
+
+    fn build_body(req: &ChatRequest, model_id: &str, stream: bool) -> serde_json::Value {
+        let mut body = serde_json::to_value(req).unwrap_or_else(|_| serde_json::json!({}));
+        body["model"] = serde_json::json!(model_id);
+        if stream {
+            body["stream"] = serde_json::json!(true);
+            body["stream_options"] = serde_json::json!({"include_usage": true});
+        } else if let Some(obj) = body.as_object_mut() {
+            obj.remove("stream");
+        }
+        // OpenAI's Responses API uses max_completion_tokens.
+        if let Some(obj) = body.as_object_mut() {
+            if let Some(v) = obj.remove("max_tokens") {
+                if !v.is_null() {
+                    obj.insert("max_completion_tokens".into(), v);
+                }
+            }
+        }
+        body
+    }
+}
+
+#[async_trait]
+impl Provider for CodexOAuthProvider {
+    async fn chat(
+        &self,
+        req: ChatRequest,
+        model_id: &str,
+        _cred: &Credential,
+    ) -> Result<ChatResponse, ProxyError> {
+        let token = self.get_token().await?;
+        let body = Self::build_body(&req, model_id, false);
+        let resp = self
+            .client
+            .post(format!("{OPENAI_BASE}/chat/completions"))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProxyError::Upstream { status, body });
+        }
+        Ok(resp.json::<ChatResponse>().await?)
+    }
+
+    async fn chat_stream(
+        &self,
+        req: ChatRequest,
+        model_id: &str,
+        _cred: &Credential,
+    ) -> Result<BoxStream<'static, Result<Bytes, ProxyError>>, ProxyError> {
+        let token = self.get_token().await?;
+        let body = Self::build_body(&req, model_id, true);
+        let resp = self
+            .client
+            .post(format!("{OPENAI_BASE}/chat/completions"))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProxyError::Upstream { status, body });
+        }
+        let stream = resp.bytes_stream().map(|r| r.map_err(ProxyError::from));
+        Ok(Box::pin(stream))
+    }
+}
