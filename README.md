@@ -1,24 +1,32 @@
 # llmproxy
 
-Localhost LLM proxy — OpenAI-compatible API, no Python required.
+Localhost LLM proxy with a macOS menu-bar app. Two main use cases:
 
-Point any OpenAI SDK at `http://localhost:8080/v1` and route to OpenAI,
-Anthropic, Gemini, AWS Bedrock, Azure OpenAI, Mistral, TogetherAI, or
-Databricks Model Serving by prefixing the model with a provider name:
+**1. Unified endpoint for agent development** — point any OpenAI-compatible SDK at
+`http://localhost:8080/v1` and reach OpenAI, Anthropic, Gemini, Bedrock, Azure,
+Mistral, TogetherAI, or Databricks by prefixing the model name:
 
 ```python
 from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8080/v1", api_key="")
 client.chat.completions.create(
-    model="anthropic/claude-sonnet-4-5",
+    model="anthropic/claude-sonnet-4-5",   # or "openai/gpt-4o", "gemini/gemini-2.5-flash", …
     messages=[{"role": "user", "content": "hello"}],
 )
 ```
 
+**2. Switch providers for coding agents** — run Claude Code, Codex CLI, or Gemini CLI
+against any backend without touching their config. Use GPT-4o inside Claude Code,
+or route everything through your company's Databricks endpoint:
+
+```bash
+# Claude Code → GPT-4o via OpenAI
+ANTHROPIC_BASE_URL=http://localhost:8080/anthropic claude   # model set to openai/gpt-4o in Agents tab
+```
+
 No config file is required. API keys can be read from standard environment
 variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) or passed per-request in
-the `Authorization: Bearer …` header. A YAML config file (§ Config below) is
-supported if you'd rather keep keys out of your shell environment.
+the `Authorization: Bearer …` header.
 
 ## Desktop app
 
