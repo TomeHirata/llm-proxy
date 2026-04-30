@@ -95,6 +95,70 @@ npm run tauri dev
 
 All providers support both non-streaming and streaming (`stream: true`).
 
+## Routing
+
+Every request's `model` field is parsed as `provider/model_id` on the first
+`/`. Model IDs containing slashes — e.g. Bedrock cross-region ARNs like
+`us.anthropic.claude-3-5-sonnet-20241022-v2:0` — are preserved verbatim.
+
+| `model` field                          | Provider   | Upstream model id                 |
+|----------------------------------------|------------|-----------------------------------|
+| `openai/gpt-4o`                        | OpenAI     | `gpt-4o`                          |
+| `anthropic/claude-sonnet-4-5`          | Anthropic  | `claude-sonnet-4-5`               |
+| `gemini/gemini-2.5-flash`              | Gemini     | `gemini-2.5-flash`                |
+| `bedrock/amazon.nova-pro-v1:0`         | Bedrock    | `amazon.nova-pro-v1:0`            |
+| `azure/my-gpt4-deployment`             | Azure      | `my-gpt4-deployment` (deployment) |
+| `mistral/mistral-large-latest`         | Mistral    | `mistral-large-latest`            |
+| `databricks/databricks-gpt-5`         | Databricks | `databricks-gpt-5`                |
+
+## Endpoints
+
+| Method | Path                                            | Notes                                          |
+|--------|-------------------------------------------------|------------------------------------------------|
+| POST   | `/v1/chat/completions`                          | Unified OpenAI shape; `stream: true` uses SSE  |
+| GET    | `/v1/models`                                    | Lists configured provider keys                 |
+| GET    | `/health`                                       | Returns `ok`                                   |
+| POST   | `/openai/v1/responses`                          | OpenAI Responses API passthrough               |
+| POST   | `/anthropic/v1/messages`                        | Anthropic Messages API passthrough             |
+| POST   | `/gemini/v1beta/models/:model/generateContent`  | Gemini generateContent passthrough             |
+
+## Recipes
+
+### Claude Code
+
+Route Claude Code through the proxy to use any provider and track usage:
+
+```bash
+llmproxy serve --daemon
+export ANTHROPIC_BASE_URL="http://localhost:8080/anthropic"
+claude
+```
+
+Or use the **Agents tab** in the desktop app to configure this with one click.
+
+### OpenAI Codex CLI
+
+```bash
+export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
+codex
+```
+
+### Gemini CLI
+
+```bash
+export GOOGLE_GEMINI_BASE_URL="http://localhost:8080/gemini"
+gemini
+```
+
+### Cursor / VS Code Copilot
+
+```bash
+export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
+```
+
+<details>
+<summary><strong>CLI install &amp; usage</strong></summary>
+
 ## Install (CLI)
 
 ### macOS (universal binary — Intel + Apple Silicon)
@@ -190,22 +254,6 @@ usage_log:
   enabled: false
 ```
 
-### Routing
-
-Every request's `model` field is parsed as `provider/model_id` on the first
-`/`. Model IDs containing slashes — e.g. Bedrock cross-region ARNs like
-`us.anthropic.claude-3-5-sonnet-20241022-v2:0` — are preserved verbatim.
-
-| `model` field                           | Provider    | Upstream model id                   |
-|-----------------------------------------|-------------|-------------------------------------|
-| `openai/gpt-4o`                         | OpenAI      | `gpt-4o`                            |
-| `anthropic/claude-sonnet-4-5`           | Anthropic   | `claude-sonnet-4-5`                 |
-| `gemini/gemini-2.5-flash`               | Gemini      | `gemini-2.5-flash`                  |
-| `bedrock/amazon.nova-pro-v1:0`          | Bedrock     | `amazon.nova-pro-v1:0`              |
-| `azure/my-gpt4-deployment`              | Azure       | `my-gpt4-deployment` (deployment)   |
-| `mistral/mistral-large-latest`          | Mistral     | `mistral-large-latest`              |
-| `databricks/databricks-gpt-5`          | Databricks  | `databricks-gpt-5`                  |
-
 ### Credential resolution
 
 Per-request, highest priority first:
@@ -256,50 +304,7 @@ providers:
 
 See `config.example.yaml` for the full schema.
 
-## Recipes
-
-### Claude Code
-
-Route Claude Code through the proxy to use any provider and track usage:
-
-```bash
-llmproxy serve --daemon
-export ANTHROPIC_BASE_URL="http://localhost:8080/anthropic"
-claude
-```
-
-Or use the **Agents tab** in the desktop app to configure this with one click.
-
-### OpenAI Codex CLI
-
-```bash
-export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
-codex
-```
-
-### Gemini CLI
-
-```bash
-export GOOGLE_GEMINI_BASE_URL="http://localhost:8080/gemini"
-gemini
-```
-
-### Cursor / VS Code Copilot
-
-```bash
-export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
-```
-
-## Endpoints
-
-| Method | Path                                            | Notes                                          |
-|--------|-------------------------------------------------|------------------------------------------------|
-| POST   | `/v1/chat/completions`                          | Unified OpenAI shape; `stream: true` uses SSE  |
-| GET    | `/v1/models`                                    | Lists configured provider keys                 |
-| GET    | `/health`                                       | Returns `ok`                                   |
-| POST   | `/openai/v1/responses`                          | OpenAI Responses API passthrough               |
-| POST   | `/anthropic/v1/messages`                        | Anthropic Messages API passthrough             |
-| POST   | `/gemini/v1beta/models/:model/generateContent`  | Gemini generateContent passthrough             |
+</details>
 
 ## Project layout
 
@@ -321,4 +326,3 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo build --release -p llmproxy-server
 ```
-
