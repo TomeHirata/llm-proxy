@@ -67,16 +67,16 @@ pub async fn start_device_flow() -> Result<DeviceFlowInfo, String> {
     let resp = client
         .post(DEVICE_CODE_URL)
         .header("Accept", "application/json")
-        .form(&[
-            ("client_id", GITHUB_CLIENT_ID),
-            ("scope", "read:user"),
-        ])
+        .form(&[("client_id", GITHUB_CLIENT_ID), ("scope", "read:user")])
         .send()
         .await
         .map_err(|e| e.to_string())?;
 
     if !resp.status().is_success() {
-        return Err(format!("GitHub device code request failed: {}", resp.status()));
+        return Err(format!(
+            "GitHub device code request failed: {}",
+            resp.status()
+        ));
     }
 
     let dc: DeviceCodeResponse = resp.json().await.map_err(|e| e.to_string())?;
@@ -102,10 +102,7 @@ pub async fn poll_device_flow(
         .form(&[
             ("client_id", GITHUB_CLIENT_ID),
             ("device_code", device_code),
-            (
-                "grant_type",
-                "urn:ietf:params:oauth:grant-type:device_code",
-            ),
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ])
         .send()
         .await
@@ -158,11 +155,8 @@ async fn fetch_github_user(token: &str) -> Result<GitHubUser, String> {
     resp.json().await.map_err(|e| e.to_string())
 }
 
-fn save_copilot_creds(
-    oauth_path: &std::path::Path,
-    creds: &CopilotCreds,
-) -> Result<(), String> {
-    let store = crate::oauth_store::load_store(oauth_path);
+fn save_copilot_creds(oauth_path: &std::path::Path, creds: &CopilotCreds) -> Result<(), String> {
+    let store = crate::oauth_store::load_store(oauth_path).unwrap_or_default();
     let updated = crate::oauth_store::OAuthStore {
         copilot: Some(creds.clone()),
         ..store
@@ -171,7 +165,7 @@ fn save_copilot_creds(
 }
 
 pub fn clear_copilot_creds(oauth_path: &std::path::Path) -> Result<(), String> {
-    let store = crate::oauth_store::load_store(oauth_path);
+    let store = crate::oauth_store::load_store(oauth_path).unwrap_or_default();
     let updated = crate::oauth_store::OAuthStore {
         copilot: None,
         ..store
@@ -181,6 +175,7 @@ pub fn clear_copilot_creds(oauth_path: &std::path::Path) -> Result<(), String> {
 
 pub fn read_copilot_account(oauth_path: &std::path::Path) -> Option<CopilotAccount> {
     crate::oauth_store::load_store(oauth_path)
+        .ok()?
         .copilot
         .map(|c| CopilotAccount {
             login: c.login,

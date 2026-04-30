@@ -11,10 +11,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const DEVICE_AUTH_USERCODE_URL: &str =
-    "https://auth.openai.com/api/accounts/deviceauth/usercode";
-const DEVICE_AUTH_TOKEN_URL: &str =
-    "https://auth.openai.com/api/accounts/deviceauth/token";
+const DEVICE_AUTH_USERCODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
+const DEVICE_AUTH_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
 const OAUTH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const VERIFICATION_URI: &str = "https://auth.openai.com/codex/device";
 const REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
@@ -52,10 +50,7 @@ struct JwtClaims {
     chatgpt_account_id: Option<String>,
     #[serde(default)]
     email: Option<String>,
-    #[serde(
-        default,
-        rename = "https://api.openai.com/auth"
-    )]
+    #[serde(default, rename = "https://api.openai.com/auth")]
     openai_auth: Option<OpenAiAuthClaim>,
 }
 
@@ -158,7 +153,7 @@ pub async fn poll_device_flow(
         .ok_or("Response missing refresh_token")?;
 
     let (account_id, email) = extract_identity(&tokens.access_token, tokens.id_token.as_deref());
-    let account_id = account_id.ok_or("Could not extract account_id from token")?;
+    let account_id = account_id.unwrap_or_else(|| "unknown".to_string());
 
     let creds = CodexCreds {
         refresh_token,
@@ -179,10 +174,7 @@ async fn exchange_code(code: &str, code_verifier: &str) -> Result<OAuthTokenResp
     let client = Client::new();
     let resp = client
         .post(OAUTH_TOKEN_URL)
-        .header(
-            "Content-Type",
-            "application/x-www-form-urlencoded",
-        )
+        .header("Content-Type", "application/x-www-form-urlencoded")
         .form(&[
             ("grant_type", "authorization_code"),
             ("code", code),
@@ -200,7 +192,10 @@ async fn exchange_code(code: &str, code_verifier: &str) -> Result<OAuthTokenResp
     resp.json().await.map_err(|e| e.to_string())
 }
 
-fn extract_identity(access_token: &str, id_token: Option<&str>) -> (Option<String>, Option<String>) {
+fn extract_identity(
+    access_token: &str,
+    id_token: Option<&str>,
+) -> (Option<String>, Option<String>) {
     let mut account_id = None;
     let mut email = None;
 
@@ -246,7 +241,7 @@ fn parse_interval(value: Option<&serde_json::Value>) -> u64 {
 }
 
 fn save_codex_creds(oauth_path: &std::path::Path, creds: &CodexCreds) -> Result<(), String> {
-    let store = crate::oauth_store::load_store(oauth_path);
+    let store = crate::oauth_store::load_store(oauth_path).unwrap_or_default();
     let updated = crate::oauth_store::OAuthStore {
         codex: Some(creds.clone()),
         ..store
@@ -255,7 +250,7 @@ fn save_codex_creds(oauth_path: &std::path::Path, creds: &CodexCreds) -> Result<
 }
 
 pub fn clear_codex_creds(oauth_path: &std::path::Path) -> Result<(), String> {
-    let store = crate::oauth_store::load_store(oauth_path);
+    let store = crate::oauth_store::load_store(oauth_path).unwrap_or_default();
     let updated = crate::oauth_store::OAuthStore {
         codex: None,
         ..store
@@ -265,6 +260,7 @@ pub fn clear_codex_creds(oauth_path: &std::path::Path) -> Result<(), String> {
 
 pub fn read_codex_account(oauth_path: &std::path::Path) -> Option<CodexAccount> {
     crate::oauth_store::load_store(oauth_path)
+        .ok()?
         .codex
         .map(|c| CodexAccount {
             account_id: c.account_id,

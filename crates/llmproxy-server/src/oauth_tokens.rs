@@ -1,8 +1,8 @@
 //! Reads `~/.config/llmproxy/oauth_tokens.json` to obtain long-lived
 //! credentials (GitHub token for Copilot, refresh token for Codex).
 
-use std::path::Path;
 use serde::Deserialize;
+use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct OAuthStore {
@@ -36,8 +36,20 @@ impl OAuthTokens {
         if !path.exists() {
             return Self::default();
         }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        let store: OAuthStore = serde_json::from_str(&content).unwrap_or_default();
+        let content = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("failed to read {}: {e}", path.display());
+                return Self::default();
+            }
+        };
+        let store: OAuthStore = match serde_json::from_str(&content) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("failed to parse {}: {e}", path.display());
+                return Self::default();
+            }
+        };
         Self {
             copilot_github_token: store.copilot.map(|c| c.github_token),
             codex_refresh_token: store.codex.map(|c| c.refresh_token),

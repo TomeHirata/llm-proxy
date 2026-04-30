@@ -15,14 +15,17 @@ pub struct OAuthStore {
 }
 
 /// `dir` is the config directory (e.g. `~/.config/llmproxy`).
-/// The store is always at `dir/oauth_tokens.json`.
-pub fn load_store(dir: &std::path::Path) -> OAuthStore {
+/// Returns an error if the file exists but cannot be read or parsed, so
+/// callers can avoid overwriting valid credentials on a transient I/O failure.
+pub fn load_store(dir: &std::path::Path) -> Result<OAuthStore, String> {
     let path = dir.join("oauth_tokens.json");
     if !path.exists() {
-        return OAuthStore::default();
+        return Ok(OAuthStore::default());
     }
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    serde_json::from_str(&content).unwrap_or_default()
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read OAuth store {}: {}", path.display(), e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("failed to parse OAuth store {}: {}", path.display(), e))
 }
 
 pub fn save_store(dir: &std::path::Path, store: &OAuthStore) -> Result<(), String> {
@@ -30,7 +33,7 @@ pub fn save_store(dir: &std::path::Path, store: &OAuthStore) -> Result<(), Strin
     let path = dir.join("oauth_tokens.json");
     let content = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
 
-    // Atomic write via temp file
+    // Atomic write via temp file.
     let tmp = dir.join("oauth_tokens.json.tmp");
     std::fs::write(&tmp, &content).map_err(|e| e.to_string())?;
 
@@ -38,6 +41,12 @@ pub fn save_store(dir: &std::path::Path, store: &OAuthStore) -> Result<(), Strin
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+
+    // On Windows rename fails if the destination exists; remove it first.
+    #[cfg(windows)]
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
 
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())

@@ -11,7 +11,9 @@ use tauri::{
 const PROXY_BASE: &str = "http://127.0.0.1:8080";
 
 fn oauth_config_dir() -> std::path::PathBuf {
-    home_dir().join(".config/llmproxy")
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".config/llmproxy")
 }
 
 pub fn run() {

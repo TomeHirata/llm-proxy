@@ -1441,7 +1441,10 @@ mod tests {
         use crate::{config::AppConfig, oauth_tokens::OAuthTokens, registry::ProviderRegistry};
         let cfg = AppConfig::default();
         AppState {
-            registry: std::sync::Arc::new(ProviderRegistry::from_config(&cfg, &OAuthTokens::default())),
+            registry: std::sync::Arc::new(ProviderRegistry::from_config(
+                &cfg,
+                &OAuthTokens::default(),
+            )),
             usage_store: None,
             http: reqwest::Client::new(),
             max_body_bytes: 1024,

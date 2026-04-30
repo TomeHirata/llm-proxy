@@ -344,9 +344,7 @@ mod tests {
 
     #[test]
     fn databricks_base_url_no_trailing_slash() {
-        let p = PassthroughProvider::databricks(
-            "https://my-workspace.azuredatabricks.net",
-        );
+        let p = PassthroughProvider::databricks("https://my-workspace.azuredatabricks.net");
         assert_eq!(
             p.base_url,
             "https://my-workspace.azuredatabricks.net/serving-endpoints/v1"
@@ -355,9 +353,7 @@ mod tests {
 
     #[test]
     fn databricks_base_url_trailing_slash_stripped() {
-        let p = PassthroughProvider::databricks(
-            "https://my-workspace.azuredatabricks.net/",
-        );
+        let p = PassthroughProvider::databricks("https://my-workspace.azuredatabricks.net/");
         assert_eq!(
             p.base_url,
             "https://my-workspace.azuredatabricks.net/serving-endpoints/v1"

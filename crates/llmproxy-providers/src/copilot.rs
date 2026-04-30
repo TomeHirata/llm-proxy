@@ -85,11 +85,20 @@ impl CopilotProvider {
             .await?;
 
         if !resp.status().is_success() {
-            let status = resp.status().as_u16();
+            let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(ProxyError::Config(format!(
-                "Copilot token fetch failed ({status}): {body}"
-            )));
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                    ProxyError::Config(format!(
+                        "Copilot token fetch failed ({}): {body}",
+                        status.as_u16()
+                    ))
+                }
+                _ => ProxyError::Upstream {
+                    status: status.as_u16(),
+                    body,
+                },
+            });
         }
 
         #[derive(serde::Deserialize)]
@@ -97,15 +106,19 @@ impl CopilotProvider {
             token: String,
             expires_at: String,
         }
-        let body: Resp = resp.json().await.map_err(|e| {
-            ProxyError::Config(format!("Failed to parse Copilot token: {e}"))
-        })?;
+        let body: Resp = resp
+            .json()
+            .await
+            .map_err(|e| ProxyError::Config(format!("Failed to parse Copilot token: {e}")))?;
 
         let expires_at = chrono::DateTime::parse_from_rfc3339(&body.expires_at)
             .map(|dt| dt.timestamp())
             .unwrap_or_else(|_| chrono::Utc::now().timestamp() + 1800);
 
-        Ok(CachedToken { token: body.token, expires_at })
+        Ok(CachedToken {
+            token: body.token,
+            expires_at,
+        })
     }
 
     fn add_copilot_headers(rb: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
@@ -171,5 +184,71 @@ impl Provider for CopilotProvider {
         }
         let stream = resp.bytes_stream().map(|r| r.map_err(ProxyError::from));
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llmproxy_core::openai_types::{ChatMessage, MessageContent};
+
+    fn simple_req() -> ChatRequest {
+        ChatRequest {
+            model: "copilot/gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: MessageContent::Text("hi".into()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            stream: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn build_body_sets_model() {
+        let req = simple_req();
+        let body = CopilotProvider::build_body(&req, "gpt-4o", false);
+        assert_eq!(body["model"], serde_json::json!("gpt-4o"));
+    }
+
+    #[test]
+    fn build_body_stream_adds_stream_options() {
+        let req = simple_req();
+        let body = CopilotProvider::build_body(&req, "gpt-4o", true);
+        assert_eq!(body["stream"], serde_json::json!(true));
+        assert!(body["stream_options"].is_object());
+    }
+
+    #[test]
+    fn build_body_non_stream_removes_stream_key() {
+        let mut req = simple_req();
+        req.stream = Some(true);
+        let body = CopilotProvider::build_body(&req, "gpt-4o", false);
+        assert!(body.get("stream").is_none());
+    }
+
+    #[test]
+    fn cached_token_expiry() {
+        let future = CachedToken {
+            token: "tok".into(),
+            expires_at: chrono::Utc::now().timestamp() + 300,
+        };
+        assert!(!future.is_expiring_soon());
+
+        let soon = CachedToken {
+            token: "tok".into(),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+        assert!(soon.is_expiring_soon());
     }
 }

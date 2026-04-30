@@ -86,12 +86,21 @@ impl CodexOAuthProvider {
             .await?;
 
         if !resp.status().is_success() {
-            let status = resp.status().as_u16();
+            let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(ProxyError::Config(format!(
-                "Codex token refresh failed ({status}): {body}\n\
-                 Please re-authenticate via the llmproxy app."
-            )));
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                    ProxyError::Config(format!(
+                        "Codex token refresh failed ({}): {body}\n\
+                         Please re-authenticate via the llmproxy app.",
+                        status.as_u16()
+                    ))
+                }
+                _ => ProxyError::Upstream {
+                    status: status.as_u16(),
+                    body,
+                },
+            });
         }
 
         #[derive(serde::Deserialize)]
@@ -100,12 +109,16 @@ impl CodexOAuthProvider {
             #[serde(default)]
             expires_in: Option<i64>,
         }
-        let body: Resp = resp.json().await.map_err(|e| {
-            ProxyError::Config(format!("Failed to parse Codex token: {e}"))
-        })?;
+        let body: Resp = resp
+            .json()
+            .await
+            .map_err(|e| ProxyError::Config(format!("Failed to parse Codex token: {e}")))?;
 
         let expires_at = chrono::Utc::now().timestamp() + body.expires_in.unwrap_or(3600);
-        Ok(CachedToken { token: body.access_token, expires_at })
+        Ok(CachedToken {
+            token: body.access_token,
+            expires_at,
+        })
     }
 
     fn build_body(req: &ChatRequest, model_id: &str, stream: bool) -> serde_json::Value {
@@ -176,5 +189,73 @@ impl Provider for CodexOAuthProvider {
         }
         let stream = resp.bytes_stream().map(|r| r.map_err(ProxyError::from));
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llmproxy_core::openai_types::{ChatMessage, MessageContent};
+
+    fn simple_req() -> ChatRequest {
+        ChatRequest {
+            model: "codex_oauth/gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: MessageContent::Text("hi".into()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            stream: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn build_body_translates_max_tokens() {
+        let mut req = simple_req();
+        req.max_tokens = Some(512);
+        let body = CodexOAuthProvider::build_body(&req, "gpt-4o", false);
+        assert_eq!(body["max_completion_tokens"], serde_json::json!(512));
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn build_body_stream_options_included() {
+        let req = simple_req();
+        let body = CodexOAuthProvider::build_body(&req, "gpt-4o", true);
+        assert_eq!(body["stream"], serde_json::json!(true));
+        assert!(body["stream_options"].is_object());
+    }
+
+    #[test]
+    fn build_body_non_stream_removes_stream_key() {
+        let mut req = simple_req();
+        req.stream = Some(true);
+        let body = CodexOAuthProvider::build_body(&req, "gpt-4o", false);
+        assert!(body.get("stream").is_none());
+    }
+
+    #[test]
+    fn cached_token_expiry() {
+        let future = CachedToken {
+            token: "tok".into(),
+            expires_at: chrono::Utc::now().timestamp() + 300,
+        };
+        assert!(!future.is_expiring_soon());
+
+        let soon = CachedToken {
+            token: "tok".into(),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+        assert!(soon.is_expiring_soon());
     }
 }
