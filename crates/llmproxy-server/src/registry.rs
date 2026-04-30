@@ -1,9 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use llmproxy_core::{error::ProxyError, provider::Credential, provider::Provider};
-use llmproxy_providers::{AnthropicProvider, BedrockProvider, GeminiProvider, PassthroughProvider};
+use llmproxy_providers::{
+    AnthropicProvider, BedrockProvider, CodexOAuthProvider, CopilotProvider, GeminiProvider,
+    PassthroughProvider,
+};
 
 use crate::config::{AppConfig, ProviderConfig};
+use crate::oauth_tokens::OAuthTokens;
 
 pub struct ProviderRegistry {
     providers: HashMap<String, Arc<dyn Provider>>,
@@ -14,7 +18,7 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
-    pub fn from_config(cfg: &AppConfig) -> Self {
+    pub fn from_config(cfg: &AppConfig, oauth: &OAuthTokens) -> Self {
         let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
         let mut config_creds: HashMap<String, Credential> = HashMap::new();
         let mut bedrock_region: Option<String> = None;
@@ -28,6 +32,20 @@ impl ProviderRegistry {
         providers.insert("anthropic".into(), Arc::new(AnthropicProvider::new()));
         providers.insert("gemini".into(), Arc::new(GeminiProvider::new()));
         providers.insert("bedrock".into(), Arc::new(BedrockProvider::new()));
+
+        // OAuth providers — only registered when credentials are present.
+        if let Some(github_token) = &oauth.copilot_github_token {
+            providers.insert(
+                "copilot".into(),
+                Arc::new(CopilotProvider::new(github_token.clone())),
+            );
+        }
+        if let Some(refresh_token) = &oauth.codex_refresh_token {
+            providers.insert(
+                "codex_oauth".into(),
+                Arc::new(CodexOAuthProvider::new(refresh_token.clone())),
+            );
+        }
 
         // Azure requires endpoint + api_version, so it's only registered when
         // both are present in the config.
@@ -136,6 +154,19 @@ impl ProviderRegistry {
         // Authorization header.
         if provider_name == "bedrock" {
             return self.resolve_aws_credential();
+        }
+
+        // OAuth providers manage their own credentials internally; just confirm
+        // the provider is registered (i.e. the user has signed in).
+        if provider_name == "copilot" || provider_name == "codex_oauth" {
+            return if self.providers.contains_key(provider_name) {
+                Ok(Credential::BearerToken("oauth".into()))
+            } else {
+                Err(ProxyError::Config(format!(
+                    "provider '{}' is not authenticated — sign in via the llmproxy app",
+                    provider_name
+                )))
+            };
         }
 
         if let Some(token) = auth_header.and_then(parse_bearer_token) {
@@ -291,7 +322,7 @@ mod tests {
 
     #[test]
     fn resolve_uses_header_over_config() {
-        let reg = ProviderRegistry::from_config(&base_cfg());
+        let reg = ProviderRegistry::from_config(&base_cfg(), &OAuthTokens::default());
         let (_, id, cred) = reg
             .resolve("anthropic/claude", Some("Bearer sk-from-header"))
             .unwrap();
@@ -304,7 +335,7 @@ mod tests {
 
     #[test]
     fn bearer_scheme_is_case_insensitive() {
-        let reg = ProviderRegistry::from_config(&AppConfig::default());
+        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
         let (_, _, cred) = reg.resolve("anthropic/x", Some("bearer sk-lower")).unwrap();
         match cred {
             Credential::BearerToken(s) => assert_eq!(s, "sk-lower"),
@@ -316,7 +347,7 @@ mod tests {
     fn non_bearer_scheme_is_ignored() {
         // A non-Bearer scheme should fall through to config/env resolution,
         // not be used as a token.
-        let reg = ProviderRegistry::from_config(&base_cfg());
+        let reg = ProviderRegistry::from_config(&base_cfg(), &OAuthTokens::default());
         let (_, _, cred) = reg
             .resolve("anthropic/x", Some("Basic dXNlcjpwYXNz"))
             .unwrap();
@@ -328,7 +359,7 @@ mod tests {
 
     #[test]
     fn resolve_falls_back_to_config() {
-        let reg = ProviderRegistry::from_config(&base_cfg());
+        let reg = ProviderRegistry::from_config(&base_cfg(), &OAuthTokens::default());
         let (_, _, cred) = reg.resolve("anthropic/claude", None).unwrap();
         match cred {
             Credential::BearerToken(s) => assert_eq!(s, "from-config"),
@@ -346,7 +377,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let reg = ProviderRegistry::from_config(&cfg);
+        let reg = ProviderRegistry::from_config(&cfg, &OAuthTokens::default());
         // No env var and no header: should error, not forward an empty token.
         let err = reg
             .resolve("anthropic/claude", None)
@@ -360,7 +391,7 @@ mod tests {
     fn resolve_falls_back_to_env_var() {
         let _g = EnvGuard::new(&["OPENAI_API_KEY"]);
         std::env::set_var("OPENAI_API_KEY", "from-env");
-        let reg = ProviderRegistry::from_config(&AppConfig::default());
+        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
         let (_, _, cred) = reg.resolve("openai/gpt-4o", None).unwrap();
         match cred {
             Credential::BearerToken(s) => assert_eq!(s, "from-env"),
@@ -381,7 +412,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let reg = ProviderRegistry::from_config(&cfg);
+        let reg = ProviderRegistry::from_config(&cfg, &OAuthTokens::default());
         let (_, id, cred) = reg
             .resolve("databricks/databricks-mixtral-8x7b", None)
             .unwrap();
@@ -402,7 +433,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let reg = ProviderRegistry::from_config(&cfg);
+        let reg = ProviderRegistry::from_config(&cfg, &OAuthTokens::default());
         let err = reg
             .resolve("databricks/any-model", None)
             .err()
@@ -412,7 +443,7 @@ mod tests {
 
     #[test]
     fn resolve_bad_format_errors() {
-        let reg = ProviderRegistry::from_config(&AppConfig::default());
+        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
         let err = reg
             .resolve("badformat", None)
             .err()
@@ -422,7 +453,7 @@ mod tests {
 
     #[test]
     fn resolve_unknown_provider_errors() {
-        let reg = ProviderRegistry::from_config(&AppConfig::default());
+        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
         let err = reg
             .resolve("unknown/model", None)
             .err()
@@ -435,7 +466,7 @@ mod tests {
     fn bedrock_ignores_bearer_header() {
         let _g = EnvGuard::new(&["AWS_ACCESS_KEY_ID"]);
         std::env::remove_var("AWS_ACCESS_KEY_ID");
-        let reg = ProviderRegistry::from_config(&AppConfig::default());
+        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
         let err = reg
             .resolve("bedrock/amazon.nova-pro-v1:0", Some("Bearer ignore"))
             .err()
@@ -450,7 +481,7 @@ mod tests {
         std::env::set_var("AWS_ACCESS_KEY_ID", "x");
         std::env::set_var("AWS_SECRET_ACCESS_KEY", "y");
         std::env::set_var("AWS_REGION", "us-east-1");
-        let reg = ProviderRegistry::from_config(&AppConfig::default());
+        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
         let (_, id, _) = reg
             .resolve("bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0", None)
             .unwrap();
@@ -498,7 +529,7 @@ mod tests {
                 region: None,
             },
         );
-        let reg = ProviderRegistry::from_config(&cfg);
+        let reg = ProviderRegistry::from_config(&cfg, &OAuthTokens::default());
         let names: HashMap<_, _> = reg.configured_names().into_iter().collect();
         assert_eq!(names.get("azure"), Some(&false));
         assert_eq!(names.get("openai"), Some(&false));

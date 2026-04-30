@@ -1,3 +1,7 @@
+mod codex_oauth;
+mod copilot_auth;
+mod oauth_store;
+
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -5,6 +9,12 @@ use tauri::{
 };
 
 const PROXY_BASE: &str = "http://127.0.0.1:8080";
+
+fn oauth_config_dir() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".config/llmproxy")
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -51,6 +61,14 @@ pub fn run() {
             read_agent_configs,
             apply_agent_config,
             reset_agent_config,
+            copilot_start_device_flow,
+            copilot_poll_device_flow,
+            copilot_oauth_status,
+            copilot_oauth_logout,
+            codex_start_device_flow,
+            codex_poll_device_flow,
+            codex_oauth_status,
+            codex_oauth_logout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running llmproxy app");
@@ -513,4 +531,71 @@ fn reset_gemini() -> Result<(), String> {
         .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
         .collect();
     std::fs::write(&path, filtered.join("\n") + "\n").map_err(|e| e.to_string())
+}
+
+// ── OAuth commands ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn copilot_start_device_flow() -> Result<copilot_auth::DeviceFlowInfo, String> {
+    copilot_auth::start_device_flow().await
+}
+
+#[tauri::command]
+async fn copilot_poll_device_flow(
+    app: tauri::AppHandle,
+    device_code: String,
+) -> Result<Option<copilot_auth::CopilotAccount>, String> {
+    let result = copilot_auth::poll_device_flow(&device_code, &oauth_config_dir()).await?;
+    if result.is_some() {
+        // Restart the proxy so it picks up the newly stored credentials.
+        let _ = do_stop_proxy(&app).await;
+        let _ = do_start_proxy(&app).await;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn copilot_oauth_status() -> Option<copilot_auth::CopilotAccount> {
+    copilot_auth::read_copilot_account(&oauth_config_dir())
+}
+
+#[tauri::command]
+async fn copilot_oauth_logout(app: tauri::AppHandle) -> Result<(), String> {
+    copilot_auth::clear_copilot_creds(&oauth_config_dir())?;
+    let _ = do_stop_proxy(&app).await;
+    let _ = do_start_proxy(&app).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn codex_start_device_flow() -> Result<codex_oauth::DeviceFlowInfo, String> {
+    codex_oauth::start_device_flow().await
+}
+
+#[tauri::command]
+async fn codex_poll_device_flow(
+    app: tauri::AppHandle,
+    device_code: String,
+    user_code: String,
+) -> Result<Option<codex_oauth::CodexAccount>, String> {
+    let result =
+        codex_oauth::poll_device_flow(&device_code, &user_code, &oauth_config_dir()).await?;
+    if result.is_some() {
+        let _ = do_stop_proxy(&app).await;
+        let _ = do_start_proxy(&app).await;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn codex_oauth_status() -> Option<codex_oauth::CodexAccount> {
+    codex_oauth::read_codex_account(&oauth_config_dir())
+}
+
+#[tauri::command]
+async fn codex_oauth_logout(app: tauri::AppHandle) -> Result<(), String> {
+    codex_oauth::clear_codex_creds(&oauth_config_dir())?;
+    let _ = do_stop_proxy(&app).await;
+    let _ = do_start_proxy(&app).await;
+    Ok(())
 }

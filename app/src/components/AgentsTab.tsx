@@ -28,6 +28,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   togetherai: "TogetherAI",
   bedrock: "AWS Bedrock",
   azure: "Azure OpenAI",
+  databricks: "Databricks",
+  copilot: "GitHub Copilot",
+  codex_oauth: "Codex (OAuth)",
 };
 
 const AGENTS = [
@@ -173,33 +176,29 @@ export default function AgentsTab({ configuredProviders }: Props) {
             className="bg-white rounded-lg border border-gray-200 p-4 space-y-3"
           >
             {/* Header */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                {agent.logoImg ? (
-                  <img src={agent.logoImg} alt={agent.name} className="w-5 h-5 object-contain" />
-                ) : (
-                  <span className={`text-xl leading-none ${agent.logoColor}`}>
-                    {agent.logo}
-                  </span>
-                )}
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-gray-800 text-sm">
-                      {agent.name}
+            <div className="flex items-center gap-2">
+              {agent.logoImg ? (
+                <img src={agent.logoImg} alt={agent.name} className="w-5 h-5 object-contain" />
+              ) : (
+                <span className={`text-xl leading-none ${agent.logoColor}`}>
+                  {agent.logo}
+                </span>
+              )}
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-gray-800 text-sm">{agent.name}</span>
+                  {isActive ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+                      Active
                     </span>
-                    {isActive ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
-                        Active
-                      </span>
-                    ) : (
-                      <span className="text-[11px] font-medium text-gray-400 bg-gray-100 border border-gray-200 rounded-full px-2 py-0.5">
-                        Not configured
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-400 mt-0.5">{agent.description}</p>
+                  ) : (
+                    <span className="text-[11px] font-medium text-gray-400 bg-gray-100 border border-gray-200 rounded-full px-2 py-0.5">
+                      Not configured
+                    </span>
+                  )}
                 </div>
+                <p className="text-xs text-gray-400 mt-0.5">{agent.description}</p>
               </div>
             </div>
 
