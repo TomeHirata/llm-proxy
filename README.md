@@ -17,16 +17,8 @@ client.chat.completions.create(
 
 **2. Switch providers for coding agents** — run Claude Code, Codex CLI, or Gemini CLI
 against any backend without touching their config. Use GPT-4o inside Claude Code,
-or route everything through your company's Databricks endpoint:
-
-```bash
-# Claude Code → GPT-4o via OpenAI
-ANTHROPIC_BASE_URL=http://localhost:8080/anthropic claude   # model set to openai/gpt-4o in Agents tab
-```
-
-No config file is required. API keys can be read from standard environment
-variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) or passed per-request in
-the `Authorization: Bearer …` header.
+or route everything through your company's Databricks endpoint. Configure everything
+from the **Agents** and **Providers** tabs — no environment variables or config files needed.
 
 ## Desktop app
 
