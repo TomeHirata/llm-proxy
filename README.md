@@ -314,11 +314,3 @@ cargo fmt --all -- --check
 cargo build --release -p llmproxy-server
 ```
 
-## Roadmap
-
-- **v0.1** — OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral, TogetherAI.
-  Chat + streaming. Daemon + autostart on macOS/Linux.
-- **v0.2** — Databricks Model Serving, GitHub Copilot OAuth, OpenAI Codex OAuth,
-  desktop app with usage dashboard, provider config, agents routing, and built-in chat.
-- **v0.3** — Cohere, HuggingFace TGI, `/v1/embeddings`.
-- **v1.0** — JSONL request log, full tool-call passthrough for translation providers.
