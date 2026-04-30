@@ -124,42 +124,8 @@ Every request's `model` field is parsed as `provider/model_id` on the first
 | POST   | `/anthropic/v1/messages`                        | Anthropic Messages API passthrough             |
 | POST   | `/gemini/v1beta/models/:model/generateContent`  | Gemini generateContent passthrough             |
 
-## Recipes
-
-### Claude Code
-
-Route Claude Code through the proxy to use any provider and track usage:
-
-```bash
-llmproxy serve --daemon
-export ANTHROPIC_BASE_URL="http://localhost:8080/anthropic"
-claude
-```
-
-Or use the **Agents tab** in the desktop app to configure this with one click.
-
-### OpenAI Codex CLI
-
-```bash
-export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
-codex
-```
-
-### Gemini CLI
-
-```bash
-export GOOGLE_GEMINI_BASE_URL="http://localhost:8080/gemini"
-gemini
-```
-
-### Cursor / VS Code Copilot
-
-```bash
-export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
-```
-
 <details>
-<summary><strong>CLI install &amp; usage</strong></summary>
+<summary><strong>CLI install, usage &amp; recipes</strong></summary>
 
 ## Install (CLI)
 
@@ -305,6 +271,38 @@ providers:
 ```
 
 See `config.example.yaml` for the full schema.
+
+## Recipes
+
+### Claude Code
+
+```bash
+llmproxy serve --daemon
+export ANTHROPIC_BASE_URL="http://localhost:8080/anthropic"
+claude
+```
+
+Or use the **Agents tab** in the desktop app to configure this with one click.
+
+### OpenAI Codex CLI
+
+```bash
+export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
+codex
+```
+
+### Gemini CLI
+
+```bash
+export GOOGLE_GEMINI_BASE_URL="http://localhost:8080/gemini"
+gemini
+```
+
+### Cursor / VS Code Copilot
+
+```bash
+export OPENAI_BASE_URL="http://localhost:8080/openai/v1"
+```
 
 </details>
 
