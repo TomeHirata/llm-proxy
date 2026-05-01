@@ -267,23 +267,20 @@ async fn provider_models_handler(
     State(s): State<AppState>,
     Path(provider): Path<String>,
 ) -> impl IntoResponse {
-    let cred = match s.registry.credential_for(&provider, None) {
-        Ok(c) => c,
+    if provider == "bedrock" {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": "bedrock model listing not supported"})),
+        )
+            .into_response();
+    }
+
+    let token = match s.registry.resolve_token(&provider, None).await {
+        Ok(t) => t,
         Err(e) => {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": e.to_string()})),
-            )
-                .into_response()
-        }
-    };
-
-    let token = match cred {
-        llmproxy_core::provider::Credential::BearerToken(t) => t,
-        llmproxy_core::provider::Credential::AwsSigV4 { .. } => {
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({"error": "bedrock model listing not supported"})),
             )
                 .into_response()
         }

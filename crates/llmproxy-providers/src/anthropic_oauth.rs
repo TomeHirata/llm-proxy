@@ -128,6 +128,10 @@ impl AnthropicOAuthProvider {
 
 #[async_trait]
 impl Provider for AnthropicOAuthProvider {
+    async fn fetch_token(&self, _cred: &Credential) -> Result<String, ProxyError> {
+        self.get_token().await
+    }
+
     async fn chat(
         &self,
         req: ChatRequest,

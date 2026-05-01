@@ -182,6 +182,21 @@ impl ProviderRegistry {
         self.resolve_credential(provider_name, auth_header)
     }
 
+    /// Resolve a live bearer token for `provider_name`. For OAuth-managed providers
+    /// this triggers a token refresh if needed; for others it extracts the token
+    /// from the resolved credential.
+    pub async fn resolve_token(
+        &self,
+        provider_name: &str,
+        auth_header: Option<&str>,
+    ) -> Result<String, ProxyError> {
+        let cred = self.resolve_credential(provider_name, auth_header)?;
+        let provider = self.providers.get(provider_name).ok_or_else(|| {
+            ProxyError::ModelNotFound(format!("provider '{}' is not configured", provider_name))
+        })?;
+        provider.fetch_token(&cred).await
+    }
+
     fn resolve_credential(
         &self,
         provider_name: &str,

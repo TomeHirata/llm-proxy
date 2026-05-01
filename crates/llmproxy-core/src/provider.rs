@@ -35,4 +35,16 @@ pub trait Provider: Send + Sync {
         model_id: &str,
         cred: &Credential,
     ) -> Result<BoxStream<'static, Result<Bytes, ProxyError>>, ProxyError>;
+
+    /// Return a live bearer token for this provider. The default implementation
+    /// extracts the token from `cred`; OAuth providers override this to return a
+    /// freshly-refreshed access token (ignoring `cred`).
+    async fn fetch_token(&self, cred: &Credential) -> Result<String, ProxyError> {
+        match cred {
+            Credential::BearerToken(t) => Ok(t.clone()),
+            Credential::AwsSigV4 { .. } => Err(ProxyError::Config(
+                "AWS SigV4 providers do not use bearer tokens".into(),
+            )),
+        }
+    }
 }
