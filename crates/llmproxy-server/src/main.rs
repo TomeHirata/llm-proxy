@@ -192,10 +192,11 @@ fn tokio_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 }
 
 async fn run_server(cfg: AppConfig, cfg_path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
-    let oauth = dirs::home_dir()
-        .map(|h| OAuthTokens::load(&h.join(".config/llmproxy")))
+    let config_dir = dirs::home_dir()
+        .map(|h| h.join(".config/llmproxy"))
         .unwrap_or_default();
-    let registry = Arc::new(ProviderRegistry::from_config(&cfg, &oauth));
+    let oauth = OAuthTokens::load(&config_dir);
+    let registry = Arc::new(ProviderRegistry::from_config(&cfg, &oauth, &config_dir));
     let usage_store = open_usage_store_for(&cfg.usage_log)?;
     if let Some(store) = &usage_store {
         spawn_retention_task(store.clone(), cfg.usage_log.retention_days);
@@ -323,10 +324,11 @@ fn status_daemon() -> anyhow::Result<()> {
 
 fn list_providers(config_path: Option<&str>) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
-    let oauth = dirs::home_dir()
-        .map(|h| OAuthTokens::load(&h.join(".config/llmproxy")))
+    let config_dir = dirs::home_dir()
+        .map(|h| h.join(".config/llmproxy"))
         .unwrap_or_default();
-    let registry = ProviderRegistry::from_config(&cfg, &oauth);
+    let oauth = OAuthTokens::load(&config_dir);
+    let registry = ProviderRegistry::from_config(&cfg, &oauth, &config_dir);
     println!("Configured providers:");
     for (name, configured) in registry.configured_names() {
         let mark = if configured { "✓" } else { "✗" };
@@ -354,10 +356,11 @@ fn list_providers(config_path: Option<&str>) -> anyhow::Result<()> {
 
 fn cmd_test(provider: &str, config_path: Option<&str>) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
-    let oauth = dirs::home_dir()
-        .map(|h| OAuthTokens::load(&h.join(".config/llmproxy")))
+    let config_dir = dirs::home_dir()
+        .map(|h| h.join(".config/llmproxy"))
         .unwrap_or_default();
-    let registry = ProviderRegistry::from_config(&cfg, &oauth);
+    let oauth = OAuthTokens::load(&config_dir);
+    let registry = ProviderRegistry::from_config(&cfg, &oauth, &config_dir);
     let rt = tokio_runtime()?;
 
     let model_id = default_test_model(provider)?;

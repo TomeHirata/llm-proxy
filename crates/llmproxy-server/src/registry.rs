@@ -23,7 +23,7 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
-    pub fn from_config(cfg: &AppConfig, oauth: &OAuthTokens) -> Self {
+    pub fn from_config(cfg: &AppConfig, oauth: &OAuthTokens, config_dir: &std::path::Path) -> Self {
         let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
         let mut config_creds: HashMap<String, Credential> = HashMap::new();
         let mut bedrock_region: Option<String> = None;
@@ -58,10 +58,14 @@ impl ProviderRegistry {
             oauth_managed.insert("copilot".into());
         }
         if let Some(refresh_token) = &oauth.codex_refresh_token {
-            providers.insert(
-                "codex_oauth".into(),
-                Arc::new(CodexOAuthProvider::new(refresh_token.clone())),
-            );
+            let oauth_path = config_dir.join("oauth_tokens.json");
+            let provider =
+                CodexOAuthProvider::new(refresh_token.clone()).with_token_saver(move |new_token| {
+                    if let Err(e) = save_codex_refresh_token(&oauth_path, &new_token) {
+                        tracing::warn!("Failed to save rotated Codex refresh token: {e}");
+                    }
+                });
+            providers.insert("codex_oauth".into(), Arc::new(provider));
             oauth_managed.insert("codex_oauth".into());
         }
 
@@ -321,6 +325,25 @@ fn provider_credential(name: &str, p: &ProviderConfig) -> Option<Credential> {
         .map(|s| Credential::BearerToken(s.to_string()))
 }
 
+/// Persist a rotated Codex refresh token to `oauth_tokens.json` in place.
+fn save_codex_refresh_token(path: &std::path::Path, new_token: &str) -> Result<(), String> {
+    let content = if path.exists() {
+        std::fs::read_to_string(path).map_err(|e| e.to_string())?
+    } else {
+        "{}".into()
+    };
+    let mut store: serde_json::Value =
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+    store["codex"]["refresh_token"] = serde_json::json!(new_token);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&store).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,7 +393,11 @@ mod tests {
 
     #[test]
     fn resolve_uses_header_over_config() {
-        let reg = ProviderRegistry::from_config(&base_cfg(), &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &base_cfg(),
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let (_, id, cred) = reg
             .resolve("anthropic/claude", Some("Bearer sk-from-header"))
             .unwrap();
@@ -383,7 +410,11 @@ mod tests {
 
     #[test]
     fn bearer_scheme_is_case_insensitive() {
-        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &AppConfig::default(),
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let (_, _, cred) = reg.resolve("anthropic/x", Some("bearer sk-lower")).unwrap();
         match cred {
             Credential::BearerToken(s) => assert_eq!(s, "sk-lower"),
@@ -395,7 +426,11 @@ mod tests {
     fn non_bearer_scheme_is_ignored() {
         // A non-Bearer scheme should fall through to config/env resolution,
         // not be used as a token.
-        let reg = ProviderRegistry::from_config(&base_cfg(), &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &base_cfg(),
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let (_, _, cred) = reg
             .resolve("anthropic/x", Some("Basic dXNlcjpwYXNz"))
             .unwrap();
@@ -407,7 +442,11 @@ mod tests {
 
     #[test]
     fn resolve_falls_back_to_config() {
-        let reg = ProviderRegistry::from_config(&base_cfg(), &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &base_cfg(),
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let (_, _, cred) = reg.resolve("anthropic/claude", None).unwrap();
         match cred {
             Credential::BearerToken(s) => assert_eq!(s, "from-config"),
@@ -425,7 +464,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        let reg = ProviderRegistry::from_config(&cfg, &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &cfg,
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         // No env var and no header: should error, not forward an empty token.
         let err = reg
             .resolve("anthropic/claude", None)
@@ -439,7 +482,11 @@ mod tests {
     fn resolve_falls_back_to_env_var() {
         let _g = EnvGuard::new(&["OPENAI_API_KEY"]);
         std::env::set_var("OPENAI_API_KEY", "from-env");
-        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &AppConfig::default(),
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let (_, _, cred) = reg.resolve("openai/gpt-4o", None).unwrap();
         match cred {
             Credential::BearerToken(s) => assert_eq!(s, "from-env"),
@@ -460,7 +507,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        let reg = ProviderRegistry::from_config(&cfg, &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &cfg,
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let (_, id, cred) = reg
             .resolve("databricks/databricks-mixtral-8x7b", None)
             .unwrap();
@@ -481,7 +532,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        let reg = ProviderRegistry::from_config(&cfg, &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &cfg,
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let err = reg
             .resolve("databricks/any-model", None)
             .err()
@@ -491,7 +546,11 @@ mod tests {
 
     #[test]
     fn resolve_bad_format_errors() {
-        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &AppConfig::default(),
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let err = reg
             .resolve("badformat", None)
             .err()
@@ -501,7 +560,11 @@ mod tests {
 
     #[test]
     fn resolve_unknown_provider_errors() {
-        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &AppConfig::default(),
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let err = reg
             .resolve("unknown/model", None)
             .err()
@@ -514,7 +577,11 @@ mod tests {
     fn bedrock_ignores_bearer_header() {
         let _g = EnvGuard::new(&["AWS_ACCESS_KEY_ID"]);
         std::env::remove_var("AWS_ACCESS_KEY_ID");
-        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &AppConfig::default(),
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let err = reg
             .resolve("bedrock/amazon.nova-pro-v1:0", Some("Bearer ignore"))
             .err()
@@ -529,7 +596,11 @@ mod tests {
         std::env::set_var("AWS_ACCESS_KEY_ID", "x");
         std::env::set_var("AWS_SECRET_ACCESS_KEY", "y");
         std::env::set_var("AWS_REGION", "us-east-1");
-        let reg = ProviderRegistry::from_config(&AppConfig::default(), &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &AppConfig::default(),
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let (_, id, _) = reg
             .resolve("bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0", None)
             .unwrap();
@@ -577,7 +648,11 @@ mod tests {
                 region: None,
             },
         );
-        let reg = ProviderRegistry::from_config(&cfg, &OAuthTokens::default());
+        let reg = ProviderRegistry::from_config(
+            &cfg,
+            &OAuthTokens::default(),
+            std::path::Path::new("/tmp"),
+        );
         let names: HashMap<_, _> = reg.configured_names().into_iter().collect();
         assert_eq!(names.get("azure"), Some(&false));
         assert_eq!(names.get("openai"), Some(&false));

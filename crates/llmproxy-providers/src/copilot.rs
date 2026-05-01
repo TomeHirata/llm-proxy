@@ -101,19 +101,18 @@ impl CopilotProvider {
             });
         }
 
+        // GitHub returns expires_at as a Unix timestamp integer.
         #[derive(serde::Deserialize)]
         struct Resp {
             token: String,
-            expires_at: String,
+            expires_at: i64,
         }
         let body: Resp = resp
             .json()
             .await
             .map_err(|e| ProxyError::Config(format!("Failed to parse Copilot token: {e}")))?;
 
-        let expires_at = chrono::DateTime::parse_from_rfc3339(&body.expires_at)
-            .map(|dt| dt.timestamp())
-            .unwrap_or_else(|_| chrono::Utc::now().timestamp() + 1800);
+        let expires_at = body.expires_at;
 
         Ok(CachedToken {
             token: body.token,

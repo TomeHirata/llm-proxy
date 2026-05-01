@@ -32,8 +32,11 @@ impl CachedToken {
 
 pub struct CodexOAuthProvider {
     client: reqwest::Client,
-    refresh_token: String,
+    /// Mutable so we can rotate the refresh token on each use.
+    refresh_token: Arc<RwLock<String>>,
     cache: Arc<RwLock<Option<CachedToken>>>,
+    /// Called with the new refresh token whenever it rotates.
+    token_saver: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 impl CodexOAuthProvider {
@@ -43,9 +46,15 @@ impl CodexOAuthProvider {
                 .timeout(Duration::from_secs(300))
                 .build()
                 .expect("reqwest client"),
-            refresh_token: refresh_token.into(),
+            refresh_token: Arc::new(RwLock::new(refresh_token.into())),
             cache: Arc::new(RwLock::new(None)),
+            token_saver: None,
         }
+    }
+
+    pub fn with_token_saver(mut self, saver: impl Fn(String) + Send + Sync + 'static) -> Self {
+        self.token_saver = Some(Arc::new(saver));
+        self
     }
 
     async fn get_token(&self) -> Result<String, ProxyError> {
@@ -72,13 +81,14 @@ impl CodexOAuthProvider {
     }
 
     async fn refresh_access_token(&self) -> Result<CachedToken, ProxyError> {
+        let current_refresh = self.refresh_token.read().await.clone();
         let resp = self
             .client
             .post(TOKEN_URL)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&[
                 ("grant_type", "refresh_token"),
-                ("refresh_token", &self.refresh_token),
+                ("refresh_token", current_refresh.as_str()),
                 ("client_id", CLIENT_ID),
                 ("scope", "openid profile email"),
             ])
@@ -107,12 +117,22 @@ impl CodexOAuthProvider {
         struct Resp {
             access_token: String,
             #[serde(default)]
+            refresh_token: Option<String>,
+            #[serde(default)]
             expires_in: Option<i64>,
         }
         let body: Resp = resp
             .json()
             .await
             .map_err(|e| ProxyError::Config(format!("Failed to parse Codex token: {e}")))?;
+
+        // Rotate refresh token if a new one was returned.
+        if let Some(new_rt) = body.refresh_token {
+            *self.refresh_token.write().await = new_rt.clone();
+            if let Some(ref saver) = self.token_saver {
+                saver(new_rt);
+            }
+        }
 
         let expires_at = chrono::Utc::now().timestamp() + body.expires_in.unwrap_or(3600);
         Ok(CachedToken {
