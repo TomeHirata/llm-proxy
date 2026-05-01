@@ -77,8 +77,7 @@ pub fn run() {
             codex_poll_device_flow,
             codex_oauth_status,
             codex_oauth_logout,
-            databricks_start_device_flow,
-            databricks_poll_device_flow,
+            databricks_start_browser_flow,
             databricks_oauth_status,
             databricks_oauth_logout,
             anthropic_start_browser_flow,
@@ -705,25 +704,13 @@ async fn codex_oauth_logout(app: tauri::AppHandle) -> Result<(), String> {
 // ── Databricks OAuth commands ────────────────────────────────────────────────
 
 #[tauri::command]
-async fn databricks_start_device_flow(
-    workspace_url: String,
-) -> Result<databricks_oauth::DeviceFlowInfo, String> {
-    databricks_oauth::start_device_flow(&workspace_url).await
-}
-
-#[tauri::command]
-async fn databricks_poll_device_flow(
+async fn databricks_start_browser_flow(
     app: tauri::AppHandle,
-    device_code: String,
     workspace_url: String,
-) -> Result<Option<databricks_oauth::DatabricksAccount>, String> {
-    let result =
-        databricks_oauth::poll_device_flow(&device_code, &workspace_url, &oauth_config_dir())
-            .await?;
-    if result.is_some() {
-        let _ = do_stop_proxy(&app).await;
-        let _ = do_start_proxy(&app).await;
-    }
+) -> Result<databricks_oauth::DatabricksAccount, String> {
+    let result = databricks_oauth::start_browser_flow(&workspace_url, &oauth_config_dir()).await?;
+    let _ = do_stop_proxy(&app).await;
+    let _ = do_start_proxy(&app).await;
     Ok(result)
 }
 

@@ -60,14 +60,6 @@ interface AnthropicAccount {
   authenticated_at: number;
 }
 
-interface DeviceFlowInfo {
-  device_code: string;
-  user_code: string;
-  verification_uri: string;
-  expires_in: number;
-  interval: number;
-}
-
 interface OAuthFlowState {
   providerName: string;
   deviceCode: string;
@@ -76,8 +68,6 @@ interface OAuthFlowState {
   interval: number;
   polling: boolean;
   error: string;
-  /** For Databricks device code: the workspace URL used to poll */
-  workspaceUrl?: string;
 }
 
 interface Props {
@@ -145,17 +135,6 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
             setOAuthBusy(null);
             return;
           }
-        } else if (oauthFlow.providerName === "databricks") {
-          const account = await invoke<DatabricksAccount | null>("databricks_poll_device_flow", {
-            deviceCode: oauthFlow.deviceCode,
-            workspaceUrl: oauthFlow.workspaceUrl ?? "",
-          });
-          if (account) {
-            setDatabricksAccount(account);
-            setOAuthFlow(null);
-            setOAuthBusy(null);
-            return;
-          }
         } else {
           const account = await invoke<CodexAccount | null>("codex_poll_device_flow", {
             deviceCode: oauthFlow.deviceCode,
@@ -179,42 +158,23 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
     return () => { if (pollTimer.current) clearTimeout(pollTimer.current); };
   }, [oauthFlow?.polling, oauthFlow?.deviceCode, oauthFlow?.providerName, oauthFlow?.interval]);
 
-  const startOAuth = async (providerName: string, workspaceUrl?: string) => {
+  const startOAuth = async (providerName: string) => {
     if (pollTimer.current) clearTimeout(pollTimer.current);
     setOAuthBusy(providerName);
     setOAuthFlow(null);
     try {
-      if (providerName === "databricks") {
-        if (!workspaceUrl) {
-          setOAuthFlow({ providerName, deviceCode: "", userCode: "", verificationUri: "", interval: 5, polling: false, error: "Workspace URL is required. Configure it above first." });
-          setOAuthBusy(null);
-          return;
-        }
-        const info = await invoke<DeviceFlowInfo>("databricks_start_device_flow", { workspaceUrl });
-        setOAuthFlow({
-          providerName,
-          deviceCode: info.device_code,
-          userCode: info.user_code,
-          verificationUri: info.verification_uri,
-          interval: info.interval,
-          polling: true,
-          error: "",
-          workspaceUrl,
-        });
-      } else {
-        const info = await invoke<DeviceFlowInfo>(
-          providerName === "copilot" ? "copilot_start_device_flow" : "codex_start_device_flow"
-        );
-        setOAuthFlow({
-          providerName,
-          deviceCode: info.device_code,
-          userCode: info.user_code,
-          verificationUri: info.verification_uri,
-          interval: info.interval,
-          polling: true,
-          error: "",
-        });
-      }
+      const info = await invoke<{ device_code: string; user_code: string; verification_uri: string; interval: number }>(
+        providerName === "copilot" ? "copilot_start_device_flow" : "codex_start_device_flow"
+      );
+      setOAuthFlow({
+        providerName,
+        deviceCode: info.device_code,
+        userCode: info.user_code,
+        verificationUri: info.verification_uri,
+        interval: info.interval,
+        polling: true,
+        error: "",
+      });
     } catch (e) {
       setOAuthFlow({ providerName, deviceCode: "", userCode: "", verificationUri: "", interval: 5, polling: false, error: String(e) });
       setOAuthBusy(null);
@@ -402,11 +362,10 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
           );
         }
 
-        // Databricks: API key form + OAuth device code section
+        // Databricks: API key form + OAuth browser section
         if (kind === "oauth_databricks") {
           const account = databricksAccount;
           const isBusy = oauthBusy === name;
-          const activeFlow = oauthFlow?.providerName === name ? oauthFlow : null;
           const workspaceUrl = cfg?.providers[name]?.endpoint ?? "";
           const displayName = account
             ? (account.display_name ?? account.workspace_url)
@@ -487,7 +446,7 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
               <div className="border-t border-gray-100 pt-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm text-gray-600 font-medium">OAuth (device code)</span>
+                    <span className="text-sm text-gray-600 font-medium">OAuth (browser)</span>
                     {account && (
                       <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700">
                         Active
@@ -497,7 +456,7 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
                   <div className="flex items-center gap-2">
                     {account ? (
                       <>
-                        <span className="text-xs text-gray-500">{displayName}</span>
+                        {displayName && <span className="text-xs text-gray-500">{displayName}</span>}
                         <button
                           onClick={() => oauthLogout(name)}
                           disabled={isBusy}
@@ -506,49 +465,39 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
                           {isBusy ? "Signing out…" : "Sign out"}
                         </button>
                       </>
-                    ) : activeFlow ? (
-                      <button
-                        onClick={cancelOAuth}
-                        className="text-xs px-3 py-1.5 rounded-lg text-gray-500 bg-gray-100 hover:bg-gray-200"
-                      >
-                        Cancel
-                      </button>
                     ) : (
                       <button
-                        onClick={() => startOAuth(name, workspaceUrl)}
+                        onClick={async () => {
+                          if (!workspaceUrl) {
+                            setError("Configure a Workspace URL above first.");
+                            return;
+                          }
+                          setOAuthBusy(name);
+                          try {
+                            const acct = await invoke<DatabricksAccount>("databricks_start_browser_flow", { workspaceUrl });
+                            setDatabricksAccount(acct);
+                          } catch (e) {
+                            setError(String(e));
+                          } finally {
+                            setOAuthBusy(null);
+                          }
+                        }}
                         disabled={isBusy || !workspaceUrl}
                         title={!workspaceUrl ? "Configure workspace URL above first" : undefined}
                         className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-white hover:bg-gray-700 disabled:opacity-40"
                       >
-                        {isBusy ? "Starting…" : "Sign in with Databricks"}
+                        {isBusy ? (
+                          <span className="flex items-center gap-1">
+                            <span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />
+                            Waiting for browser…
+                          </span>
+                        ) : "Sign in with Databricks"}
                       </button>
                     )}
                   </div>
                 </div>
                 {!workspaceUrl && !account && (
                   <p className="text-xs text-gray-400 mt-1">Configure a workspace URL above to enable OAuth sign-in.</p>
-                )}
-                {activeFlow?.polling && (
-                  <div className="mt-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5 space-y-1.5">
-                    <p className="text-xs text-blue-800 font-medium">Open this URL and enter the code below:</p>
-                    <a
-                      href={activeFlow.verificationUri}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-blue-600 underline break-all"
-                    >
-                      {activeFlow.verificationUri}
-                    </a>
-                    <div className="flex items-center gap-2">
-                      <code className="text-sm font-mono font-bold tracking-widest text-blue-900 bg-blue-100 px-2 py-0.5 rounded">
-                        {activeFlow.userCode}
-                      </code>
-                      <span className="text-xs text-blue-500 animate-pulse">Waiting…</span>
-                    </div>
-                  </div>
-                )}
-                {activeFlow?.error && (
-                  <p className="text-xs text-red-500 mt-1">{activeFlow.error}</p>
                 )}
               </div>
             </div>

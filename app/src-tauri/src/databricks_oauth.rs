@@ -1,36 +1,29 @@
-//! Databricks OAuth — device code flow.
+//! Databricks OAuth — browser-based PKCE flow with local callback server.
 //!
 //! Flow:
-//! 1. `start_device_flow(workspace_url)` → returns user_code + verification_uri
-//! 2. User visits verification_uri and enters user_code
-//! 3. `poll_device_flow(device_code, workspace_url)` → returns Some(DatabricksAccount) when done
-//! 4. Credentials stored in `~/.config/llmproxy/oauth_tokens.json`
+//! 1. `start_browser_flow(workspace_url, oauth_path)` — OIDC discovery, open browser, wait for callback
+//! 2. Browser redirects to local server with authorization code
+//! 3. Exchange code for tokens, save credentials, return DatabricksAccount
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 const DATABRICKS_CLIENT_ID: &str = "databricks-cli";
+const DATABRICKS_SCOPES: &str = "all-apis offline_access";
+const FLOW_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Deserialize)]
-struct DeviceCodeResponse {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    expires_in: u64,
-    interval: u64,
+struct OidcDiscovery {
+    authorization_endpoint: String,
+    token_endpoint: String,
 }
 
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum TokenPollResponse {
-    Success {
-        access_token: String,
-        refresh_token: String,
-    },
-    Pending {
-        error: String,
-    },
+struct TokenResponse {
+    #[allow(dead_code)]
+    access_token: String,
+    refresh_token: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -58,16 +51,7 @@ pub struct DatabricksAccount {
     pub authenticated_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct DeviceFlowInfo {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub expires_in: u64,
-    pub interval: u64,
-}
-
-/// Normalize workspace URL: add https:// if missing, strip path/query/fragment.
+/// Normalize workspace URL: add https://, keep only scheme+host.
 fn normalize_workspace_url(raw: &str) -> Result<String, String> {
     let with_scheme = if raw.starts_with("http://") || raw.starts_with("https://") {
         raw.to_string()
@@ -82,120 +66,54 @@ fn normalize_workspace_url(raw: &str) -> Result<String, String> {
     Ok(format!("https://{host}"))
 }
 
-pub async fn start_device_flow(workspace_url: &str) -> Result<DeviceFlowInfo, String> {
-    let base = normalize_workspace_url(workspace_url)?;
-    let client = Client::new();
-    let url = format!("{base}/oidc/v1/devicecode");
-    let resp = client
-        .post(&url)
-        .form(&[
-            ("client_id", DATABRICKS_CLIENT_ID),
-            ("scope", "all-apis offline_access"),
-        ])
-        .send()
-        .await
-        .map_err(|e| format!("Databricks device code request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "Databricks device code request failed ({}) at {url}: {body}",
-            status.as_u16()
-        ));
+/// Fetch OIDC discovery document.
+async fn discover(client: &Client, base: &str) -> Result<OidcDiscovery, String> {
+    let candidates = [
+        format!("{base}/oidc/.well-known/oauth-authorization-server"),
+        format!("{base}/oidc/v1/.well-known/openid-configuration"),
+    ];
+    let mut last_err = String::new();
+    for url in &candidates {
+        match client.get(url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                return resp
+                    .json::<OidcDiscovery>()
+                    .await
+                    .map_err(|e| format!("Failed to parse OIDC discovery at {url}: {e}"));
+            }
+            Ok(resp) => {
+                last_err = format!(
+                    "OIDC discovery at {url} returned {}",
+                    resp.status().as_u16()
+                );
+            }
+            Err(e) => {
+                last_err = format!("OIDC discovery request to {url} failed: {e}");
+            }
+        }
     }
-
-    let dc: DeviceCodeResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse device code response: {e}"))?;
-
-    Ok(DeviceFlowInfo {
-        device_code: dc.device_code,
-        user_code: dc.user_code,
-        verification_uri: dc.verification_uri,
-        expires_in: dc.expires_in,
-        interval: dc.interval,
-    })
+    Err(format!(
+        "Could not find OIDC endpoints for {base}. \
+        Make sure the Workspace URL is correct and that OAuth is enabled. \
+        Last error: {last_err}"
+    ))
 }
 
-/// Poll once. Returns `Some(DatabricksAccount)` on success, `None` while pending.
-pub async fn poll_device_flow(
-    device_code: &str,
-    workspace_url: &str,
-    oauth_path: &std::path::Path,
-) -> Result<Option<DatabricksAccount>, String> {
-    let base = normalize_workspace_url(workspace_url)?;
-    let client = Client::new();
-    let url = format!("{base}/oidc/v1/token");
-    let resp = client
-        .post(&url)
-        .form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("device_code", device_code),
-            ("client_id", DATABRICKS_CLIENT_ID),
-        ])
-        .send()
-        .await
-        .map_err(|e| format!("Databricks token poll failed: {e}"))?;
+fn generate_pkce() -> (String, String) {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let verifier = URL_SAFE_NO_PAD.encode(bytes);
+    use sha2::{Digest, Sha256};
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    (verifier, challenge)
+}
 
-    let status = resp.status();
-    if status == reqwest::StatusCode::BAD_REQUEST {
-        // Parse body to check for authorization_pending
-        let text = resp.text().await.unwrap_or_default();
-        if text.contains("authorization_pending") || text.contains("slow_down") {
-            return Ok(None);
-        }
-        // Try to parse as JSON error
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-                if err == "authorization_pending" || err == "slow_down" {
-                    return Ok(None);
-                }
-                return Err(format!("Authorization failed: {err}"));
-            }
-        }
-        return Err(format!("Databricks token poll failed (400): {text}"));
-    }
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "Databricks token poll failed ({}): {body}",
-            status.as_u16()
-        ));
-    }
-
-    let poll: TokenPollResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse token response: {e}"))?;
-
-    match poll {
-        TokenPollResponse::Pending { error } => {
-            if error == "authorization_pending" || error == "slow_down" {
-                return Ok(None);
-            }
-            Err(format!("Authorization failed: {error}"))
-        }
-        TokenPollResponse::Success {
-            access_token,
-            refresh_token,
-        } => {
-            let display_name = parse_jwt_display_name(&access_token);
-            let creds = DatabricksCreds {
-                workspace_url: base.clone(),
-                refresh_token,
-                display_name: display_name.clone(),
-                authenticated_at: chrono::Utc::now().timestamp(),
-            };
-            save_databricks_creds(oauth_path, &creds)?;
-            Ok(Some(DatabricksAccount {
-                workspace_url: base,
-                display_name,
-                authenticated_at: creds.authenticated_at,
-            }))
-        }
-    }
+fn generate_state() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 fn parse_jwt_display_name(token: &str) -> Option<String> {
@@ -206,6 +124,122 @@ fn parse_jwt_display_name(token: &str) -> Option<String> {
     let decoded = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
     let claims: JwtClaims = serde_json::from_slice(&decoded).ok()?;
     claims.name.or(claims.email).or(claims.preferred_username)
+}
+
+async fn accept_callback(listener: tokio::net::TcpListener) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut stream, _) = listener
+        .accept()
+        .await
+        .map_err(|e| format!("Failed to accept connection: {e}"))?;
+
+    let mut buf = vec![0u8; 8192];
+    let n = stream
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("Failed to read request: {e}"))?;
+    let request = std::str::from_utf8(&buf[..n]).unwrap_or("");
+
+    let code = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|path| path.split('?').nth(1))
+        .and_then(|query| query.split('&').find(|p| p.starts_with("code=")))
+        .map(|p| p[5..].to_string())
+        .ok_or_else(|| "No authorization code in callback".to_string())?;
+
+    let html = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
+        <html><body><h2>Authentication successful!</h2>\
+        <p>You can close this tab.</p></body></html>";
+    let _ = stream.write_all(html.as_bytes()).await;
+
+    Ok(code)
+}
+
+pub async fn start_browser_flow(
+    workspace_url: &str,
+    oauth_path: &std::path::Path,
+) -> Result<DatabricksAccount, String> {
+    let base = normalize_workspace_url(workspace_url)?;
+    let client = Client::new();
+    let discovery = discover(&client, &base).await?;
+
+    let (verifier, challenge) = generate_pkce();
+    let state = generate_state();
+
+    // Port 8020 is pre-registered for the databricks-cli public client.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:8020")
+        .await
+        .map_err(|_| "Port 8020 is required for Databricks OAuth but is already in use. Please free it and try again.".to_string())?;
+    let redirect_uri = "http://localhost:8020".to_string();
+
+    let auth_url = format!(
+        "{}?client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256\
+         &scope={}&response_type=code&state={}",
+        discovery.authorization_endpoint,
+        DATABRICKS_CLIENT_ID,
+        urlencoding::encode(&redirect_uri),
+        challenge,
+        urlencoding::encode(DATABRICKS_SCOPES),
+        state,
+    );
+
+    open::that(&auth_url).map_err(|e| format!("Failed to open browser: {e}"))?;
+
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(FLOW_TIMEOUT_SECS),
+        accept_callback(listener),
+    )
+    .await
+    .map_err(|_| "Authentication timed out (5 minutes). Please try again.".to_string())??;
+
+    let resp = client
+        .post(&discovery.token_endpoint)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", &redirect_uri),
+            ("client_id", DATABRICKS_CLIENT_ID),
+            ("code_verifier", &verifier),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("Token exchange request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Token exchange failed ({}): {body}",
+            status.as_u16()
+        ));
+    }
+
+    let tokens: TokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {e}"))?;
+
+    let refresh_token = tokens
+        .refresh_token
+        .ok_or_else(|| "Response missing refresh_token".to_string())?;
+
+    let display_name = parse_jwt_display_name(&tokens.access_token);
+
+    let creds = DatabricksCreds {
+        workspace_url: base.clone(),
+        refresh_token,
+        display_name: display_name.clone(),
+        authenticated_at: chrono::Utc::now().timestamp(),
+    };
+    save_databricks_creds(oauth_path, &creds)?;
+
+    Ok(DatabricksAccount {
+        workspace_url: base,
+        display_name,
+        authenticated_at: creds.authenticated_at,
+    })
 }
 
 fn save_databricks_creds(
