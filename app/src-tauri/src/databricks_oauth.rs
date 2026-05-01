@@ -67,14 +67,13 @@ pub struct DeviceFlowInfo {
     pub interval: u64,
 }
 
-/// Normalize a Databricks workspace URL: ensure https://, keep only scheme+host.
+/// Normalize workspace URL: add https:// if missing, strip path/query/fragment.
 fn normalize_workspace_url(raw: &str) -> Result<String, String> {
     let with_scheme = if raw.starts_with("http://") || raw.starts_with("https://") {
         raw.to_string()
     } else {
         format!("https://{raw}")
     };
-    // Parse and keep only scheme + host (strip any path, query, fragment)
     let parsed = reqwest::Url::parse(&with_scheme)
         .map_err(|e| format!("Invalid workspace URL '{raw}': {e}"))?;
     let host = parsed
@@ -83,42 +82,15 @@ fn normalize_workspace_url(raw: &str) -> Result<String, String> {
     Ok(format!("https://{host}"))
 }
 
-/// Fetch the OIDC discovery document and return (device_authorization_endpoint, token_endpoint).
-async fn discover_oidc_endpoints(client: &Client, base: &str) -> Option<(String, String)> {
-    let discovery_url = format!("{base}/oidc/.well-known/oauth-authorization-server");
-    let resp = client.get(&discovery_url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let val: serde_json::Value = resp.json().await.ok()?;
-    let device_ep = val
-        .get("device_authorization_endpoint")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)?;
-    let token_ep = val
-        .get("token_endpoint")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)?;
-    Some((device_ep, token_ep))
-}
-
 pub async fn start_device_flow(workspace_url: &str) -> Result<DeviceFlowInfo, String> {
     let base = normalize_workspace_url(workspace_url)?;
     let client = Client::new();
-
-    // Prefer discovered endpoint, fall back to well-known path.
-    let device_ep = if let Some((ep, _)) = discover_oidc_endpoints(&client, &base).await {
-        ep
-    } else {
-        format!("{base}/oidc/v1/devicecode")
-    };
-
-    let url = device_ep;
+    let url = format!("{base}/oidc/v1/devicecode");
     let resp = client
         .post(&url)
         .form(&[
             ("client_id", DATABRICKS_CLIENT_ID),
-            ("scopes", "all-apis offline_access"),
+            ("scope", "all-apis offline_access"),
         ])
         .send()
         .await
@@ -128,7 +100,7 @@ pub async fn start_device_flow(workspace_url: &str) -> Result<DeviceFlowInfo, St
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
-            "Databricks device code request failed ({}): {body}",
+            "Databricks device code request failed ({}) at {url}: {body}",
             status.as_u16()
         ));
     }
@@ -155,11 +127,7 @@ pub async fn poll_device_flow(
 ) -> Result<Option<DatabricksAccount>, String> {
     let base = normalize_workspace_url(workspace_url)?;
     let client = Client::new();
-    let url = if let Some((_, ep)) = discover_oidc_endpoints(&client, &base).await {
-        ep
-    } else {
-        format!("{base}/oidc/v1/token")
-    };
+    let url = format!("{base}/oidc/v1/token");
     let resp = client
         .post(&url)
         .form(&[
