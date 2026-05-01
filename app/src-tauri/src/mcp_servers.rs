@@ -1,15 +1,33 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    Sse,
+    Http,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServer {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub transport: McpTransport,
+    // stdio fields
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    // http/sse fields
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     /// Which agents this server is assigned to: "claude_code", "codex", "gemini"
     #[serde(default)]
     pub agents: Vec<String>,
@@ -18,11 +36,18 @@ pub struct McpServer {
 #[derive(Debug, Deserialize)]
 pub struct McpServerInput {
     pub name: String,
+    #[serde(default)]
+    pub transport: McpTransport,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     #[serde(default)]
     pub agents: Vec<String>,
 }
@@ -52,9 +77,12 @@ pub fn add(config_dir: &std::path::Path, input: McpServerInput) -> Result<McpSer
     let server = McpServer {
         id: uuid_v4(),
         name: input.name,
+        transport: input.transport,
         command: input.command,
         args: input.args,
         env: input.env,
+        url: input.url,
+        headers: input.headers,
         agents: input.agents,
     };
     servers.push(server.clone());
@@ -83,9 +111,12 @@ pub fn update(
         .find(|s| s.id == id)
         .ok_or_else(|| format!("MCP server '{id}' not found"))?;
     server.name = input.name;
+    server.transport = input.transport;
     server.command = input.command;
     server.args = input.args;
     server.env = input.env;
+    server.url = input.url;
+    server.headers = input.headers;
     server.agents = input.agents;
     let updated = server.clone();
     save(config_dir, &servers)?;
@@ -107,14 +138,7 @@ pub fn import_from_agents(
             if existing.iter().any(|s| s.name == name) {
                 continue;
             }
-            imported.push(McpServer {
-                id: uuid_v4(),
-                name,
-                command: entry.command,
-                args: entry.args,
-                env: entry.env,
-                agents: vec!["claude_code".into()],
-            });
+            imported.push(entry_to_server(name, entry, "claude_code"));
         }
     }
 
@@ -124,14 +148,7 @@ pub fn import_from_agents(
             if existing.iter().chain(imported.iter()).any(|s| s.name == name) {
                 continue;
             }
-            imported.push(McpServer {
-                id: uuid_v4(),
-                name,
-                command: entry.command,
-                args: entry.args,
-                env: entry.env,
-                agents: vec!["gemini".into()],
-            });
+            imported.push(entry_to_server(name, entry, "gemini"));
         }
     }
 
@@ -141,14 +158,7 @@ pub fn import_from_agents(
             if existing.iter().chain(imported.iter()).any(|s| s.name == name) {
                 continue;
             }
-            imported.push(McpServer {
-                id: uuid_v4(),
-                name,
-                command: entry.command,
-                args: entry.args,
-                env: entry.env,
-                agents: vec!["codex".into()],
-            });
+            imported.push(entry_to_server(name, entry, "codex"));
         }
     }
 
@@ -160,84 +170,115 @@ pub fn import_from_agents(
     Ok(imported)
 }
 
+fn entry_to_server(name: String, entry: McpEntry, agent: &str) -> McpServer {
+    McpServer {
+        id: uuid_v4(),
+        name,
+        transport: entry.transport,
+        command: entry.command,
+        args: entry.args,
+        env: entry.env,
+        url: entry.url,
+        headers: entry.headers,
+        agents: vec![agent.into()],
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct McpEntry {
+    #[serde(rename = "type", default)]
+    transport_type: Option<String>,
     #[serde(default)]
     command: String,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(skip)]
+    transport: McpTransport,
+}
+
+impl McpEntry {
+    fn resolve_transport(mut self) -> Self {
+        self.transport = match self.transport_type.as_deref() {
+            Some("sse") => McpTransport::Sse,
+            Some("http") => McpTransport::Http,
+            _ => McpTransport::Stdio,
+        };
+        self
+    }
+}
+
+fn read_mcp_map(path: std::path::PathBuf) -> Option<HashMap<String, McpEntry>> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let obj = val.get("mcpServers")?.as_object()?;
+    let mut map = HashMap::new();
+    for (k, v) in obj {
+        if let Ok(e) = serde_json::from_value::<McpEntry>(v.clone()) {
+            map.insert(k.clone(), e.resolve_transport());
+        }
+    }
+    Some(map)
 }
 
 fn read_claude_mcp(home: &std::path::Path) -> Option<HashMap<String, McpEntry>> {
-    let path = home.join(".claude").join("settings.json");
-    let raw = std::fs::read_to_string(path).ok()?;
-    let val: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let obj = val.get("mcpServers")?.as_object()?;
-    let mut map = HashMap::new();
-    for (k, v) in obj {
-        if let Ok(e) = serde_json::from_value::<McpEntry>(v.clone()) {
-            map.insert(k.clone(), e);
-        }
-    }
-    Some(map)
+    read_mcp_map(home.join(".claude").join("settings.json"))
 }
 
 fn read_gemini_mcp(home: &std::path::Path) -> Option<HashMap<String, McpEntry>> {
-    let path = home.join(".gemini").join("settings.json");
-    let raw = std::fs::read_to_string(path).ok()?;
-    let val: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let obj = val.get("mcpServers")?.as_object()?;
-    let mut map = HashMap::new();
-    for (k, v) in obj {
-        if let Ok(e) = serde_json::from_value::<McpEntry>(v.clone()) {
-            map.insert(k.clone(), e);
-        }
-    }
-    Some(map)
+    read_mcp_map(home.join(".gemini").join("settings.json"))
 }
 
 fn read_codex_mcp(home: &std::path::Path) -> Option<HashMap<String, McpEntry>> {
-    let path = home.join(".codex").join("mcp.json");
-    let raw = std::fs::read_to_string(path).ok()?;
-    let val: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let obj = val.get("mcpServers")?.as_object()?;
-    let mut map = HashMap::new();
-    for (k, v) in obj {
-        if let Ok(e) = serde_json::from_value::<McpEntry>(v.clone()) {
-            map.insert(k.clone(), e);
-        }
-    }
-    Some(map)
+    read_mcp_map(home.join(".codex").join("mcp.json"))
 }
 
 /// Build the mcpServers JSON object for writing into agent config files.
-pub fn mcp_servers_json(
-    servers: &[McpServer],
-    agent: &str,
-) -> serde_json::Value {
+pub fn mcp_servers_json(servers: &[McpServer], agent: &str) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     for s in servers {
-        if s.agents.iter().any(|a| a == agent) {
-            let mut entry = serde_json::Map::new();
-            entry.insert("command".into(), serde_json::Value::String(s.command.clone()));
-            entry.insert(
-                "args".into(),
-                serde_json::Value::Array(
-                    s.args.iter().map(|a| serde_json::Value::String(a.clone())).collect(),
-                ),
-            );
-            if !s.env.is_empty() {
-                let env_obj: serde_json::Map<_, _> = s
-                    .env
-                    .iter()
-                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                    .collect();
-                entry.insert("env".into(), serde_json::Value::Object(env_obj));
-            }
-            obj.insert(s.name.clone(), serde_json::Value::Object(entry));
+        if !s.agents.iter().any(|a| a == agent) {
+            continue;
         }
+        let mut entry = serde_json::Map::new();
+        match s.transport {
+            McpTransport::Sse | McpTransport::Http => {
+                let type_str = if s.transport == McpTransport::Http { "http" } else { "sse" };
+                entry.insert("type".into(), serde_json::Value::String(type_str.into()));
+                entry.insert("url".into(), serde_json::Value::String(s.url.clone()));
+                if !s.headers.is_empty() {
+                    let h: serde_json::Map<_, _> = s
+                        .headers
+                        .iter()
+                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                        .collect();
+                    entry.insert("headers".into(), serde_json::Value::Object(h));
+                }
+            }
+            McpTransport::Stdio => {
+                entry.insert("command".into(), serde_json::Value::String(s.command.clone()));
+                entry.insert(
+                    "args".into(),
+                    serde_json::Value::Array(
+                        s.args.iter().map(|a| serde_json::Value::String(a.clone())).collect(),
+                    ),
+                );
+                if !s.env.is_empty() {
+                    let env_obj: serde_json::Map<_, _> = s
+                        .env
+                        .iter()
+                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                        .collect();
+                    entry.insert("env".into(), serde_json::Value::Object(env_obj));
+                }
+            }
+        }
+        obj.insert(s.name.clone(), serde_json::Value::Object(entry));
     }
     serde_json::Value::Object(obj)
 }

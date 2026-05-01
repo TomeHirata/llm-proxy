@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+type McpTransport = "stdio" | "sse" | "http";
+
 interface McpServer {
   id: string;
   name: string;
+  transport: McpTransport;
   command: string;
   args: string[];
   env: Record<string, string>;
+  url: string;
+  headers: Record<string, string>;
   agents: string[];
 }
 
@@ -24,34 +29,42 @@ interface Props {
 
 interface FormState {
   name: string;
+  transport: McpTransport;
+  // stdio
   command: string;
   args: string;   // newline-separated
   env: string;    // KEY=VALUE newline-separated
+  // http/sse
+  url: string;
+  headers: string; // KEY: VALUE newline-separated
   agents: AgentKey[];
 }
 
 const emptyForm = (): FormState => ({
   name: "",
+  transport: "stdio",
   command: "",
   args: "",
   env: "",
+  url: "",
+  headers: "",
   agents: ["claude_code", "codex", "gemini"],
 });
 
-function parseEnv(raw: string): Record<string, string> {
+function parseKvLines(raw: string, sep: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const idx = trimmed.indexOf("=");
+    const idx = trimmed.indexOf(sep);
     if (idx === -1) continue;
-    result[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
+    result[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + sep.length).trim();
   }
   return result;
 }
 
-function serializeEnv(env: Record<string, string>): string {
-  return Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n");
+function serializeKv(map: Record<string, string>, sep: string): string {
+  return Object.entries(map).map(([k, v]) => `${k}${sep}${v}`).join("\n");
 }
 
 export default function McpServersView({ onBack }: Props) {
@@ -86,9 +99,12 @@ export default function McpServersView({ onBack }: Props) {
     setEditingId(s.id);
     setForm({
       name: s.name,
+      transport: s.transport ?? "stdio",
       command: s.command,
       args: s.args.join("\n"),
-      env: serializeEnv(s.env),
+      env: serializeKv(s.env, "="),
+      url: s.url,
+      headers: serializeKv(s.headers, ": "),
       agents: s.agents as AgentKey[],
     });
     setError("");
@@ -96,17 +112,28 @@ export default function McpServersView({ onBack }: Props) {
   };
 
   const submit = async () => {
-    if (!form.name.trim() || !form.command.trim()) {
-      setError("Name and command are required.");
+    if (!form.name.trim()) {
+      setError("Name is required.");
+      return;
+    }
+    if (form.transport === "stdio" && !form.command.trim()) {
+      setError("Command is required for stdio servers.");
+      return;
+    }
+    if ((form.transport === "sse" || form.transport === "http") && !form.url.trim()) {
+      setError("URL is required for HTTP/SSE servers.");
       return;
     }
     setBusy(true);
     setError("");
     const payload = {
       name: form.name.trim(),
+      transport: form.transport,
       command: form.command.trim(),
       args: form.args.split("\n").map((a) => a.trim()).filter(Boolean),
-      env: parseEnv(form.env),
+      env: parseKvLines(form.env, "="),
+      url: form.url.trim(),
+      headers: parseKvLines(form.headers, ":"),
       agents: form.agents,
     };
     try {
@@ -160,6 +187,8 @@ export default function McpServersView({ onBack }: Props) {
         : [...f.agents, key],
     }));
   };
+
+  const isHttp = form.transport === "sse" || form.transport === "http";
 
   return (
     <div className="p-5 max-w-2xl space-y-4">
@@ -227,43 +256,91 @@ export default function McpServersView({ onBack }: Props) {
               type="text"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="e.g. filesystem"
+              placeholder="e.g. github"
               className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-300"
             />
           </div>
 
+          {/* Transport selector */}
           <div className="space-y-2">
-            <label className="block text-xs text-gray-500">Command</label>
-            <input
-              type="text"
-              value={form.command}
-              onChange={(e) => setForm({ ...form, command: e.target.value })}
-              placeholder="e.g. npx"
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
-            />
+            <label className="block text-xs text-gray-500">Transport</label>
+            <div className="flex gap-2">
+              {(["stdio", "sse", "http"] as McpTransport[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setForm({ ...form, transport: t })}
+                  className={`px-3 py-1 rounded-lg text-xs font-medium border transition-colors ${
+                    form.transport === t
+                      ? "bg-gray-800 text-white border-gray-800"
+                      : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                  }`}
+                >
+                  {t === "stdio" ? "Stdio" : t === "sse" ? "SSE" : "HTTP"}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div className="space-y-2">
-            <label className="block text-xs text-gray-500">Args (one per line)</label>
-            <textarea
-              value={form.args}
-              onChange={(e) => setForm({ ...form, args: e.target.value })}
-              placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/tmp"}
-              rows={3}
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"
-            />
-          </div>
+          {isHttp ? (
+            <>
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500">URL</label>
+                <input
+                  type="text"
+                  value={form.url}
+                  onChange={(e) => setForm({ ...form, url: e.target.value })}
+                  placeholder="https://api.example.com/mcp/"
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                />
+              </div>
 
-          <div className="space-y-2">
-            <label className="block text-xs text-gray-500">Env vars (KEY=VALUE, one per line)</label>
-            <textarea
-              value={form.env}
-              onChange={(e) => setForm({ ...form, env: e.target.value })}
-              placeholder="API_KEY=abc123"
-              rows={2}
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"
-            />
-          </div>
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500">Headers (Key: Value, one per line)</label>
+                <textarea
+                  value={form.headers}
+                  onChange={(e) => setForm({ ...form, headers: e.target.value })}
+                  placeholder={"Authorization: Bearer ghp_xxxx"}
+                  rows={3}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500">Command</label>
+                <input
+                  type="text"
+                  value={form.command}
+                  onChange={(e) => setForm({ ...form, command: e.target.value })}
+                  placeholder="e.g. npx"
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500">Args (one per line)</label>
+                <textarea
+                  value={form.args}
+                  onChange={(e) => setForm({ ...form, args: e.target.value })}
+                  placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/tmp"}
+                  rows={3}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500">Env vars (KEY=VALUE, one per line)</label>
+                <textarea
+                  value={form.env}
+                  onChange={(e) => setForm({ ...form, env: e.target.value })}
+                  placeholder="API_KEY=abc123"
+                  rows={2}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"
+                />
+              </div>
+            </>
+          )}
 
           <div className="space-y-2">
             <label className="block text-xs text-gray-500">Include in agents</label>
@@ -319,6 +396,9 @@ export default function McpServersView({ onBack }: Props) {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-sm text-gray-800">{s.name}</span>
+                    <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 border border-gray-200 font-medium uppercase">
+                      {s.transport ?? "stdio"}
+                    </span>
                     {s.agents.map((a) => {
                       const agent = AGENTS.find((ag) => ag.key === a);
                       return agent ? (
@@ -329,7 +409,9 @@ export default function McpServersView({ onBack }: Props) {
                     })}
                   </div>
                   <code className="text-xs text-gray-500 font-mono mt-0.5 block truncate">
-                    {s.command} {s.args.join(" ")}
+                    {s.transport === "sse" || s.transport === "http"
+                      ? s.url
+                      : `${s.command} ${s.args.join(" ")}`}
                   </code>
                 </div>
                 <div className="flex gap-2 flex-shrink-0">
