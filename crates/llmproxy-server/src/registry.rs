@@ -81,22 +81,18 @@ impl ProviderRegistry {
 
         // Databricks: use DatabricksOAuthProvider when refresh token present;
         // fall back to PassthroughProvider when only an endpoint/workspace URL is configured.
-        let databricks_workspace_url = oauth
-            .databricks_workspace_url
-            .clone()
-            .or_else(|| {
-                cfg.providers
-                    .get("databricks")
-                    .and_then(|p| p.endpoint.as_deref())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            });
+        let databricks_workspace_url = oauth.databricks_workspace_url.clone().or_else(|| {
+            cfg.providers
+                .get("databricks")
+                .and_then(|p| p.endpoint.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        });
 
-        if let (Some(workspace_url), Some(refresh_token)) = (
-            &databricks_workspace_url,
-            &oauth.databricks_refresh_token,
-        ) {
+        if let (Some(workspace_url), Some(refresh_token)) =
+            (&databricks_workspace_url, &oauth.databricks_refresh_token)
+        {
             providers.insert(
                 "databricks".into(),
                 Arc::new(DatabricksOAuthProvider::new(

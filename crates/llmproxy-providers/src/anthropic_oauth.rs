@@ -20,8 +20,8 @@ use crate::anthropic::{find_double_newline, translate_anthropic_event, Anthropic
 
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const ANTHROPIC_TOKEN_URL: &str = "https://console.anthropic.com/oauth/token";
-const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-48f7-a536-85d34a2647cf";
+const ANTHROPIC_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
+const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 #[derive(Debug, Clone)]
 struct CachedToken {
@@ -81,11 +81,11 @@ impl AnthropicOAuthProvider {
         let resp = self
             .client
             .post(ANTHROPIC_TOKEN_URL)
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", &self.refresh_token),
-                ("client_id", ANTHROPIC_CLIENT_ID),
-            ])
+            .json(&serde_json::json!({
+                "grant_type": "refresh_token",
+                "refresh_token": self.refresh_token,
+                "client_id": ANTHROPIC_CLIENT_ID,
+            }))
             .send()
             .await?;
 

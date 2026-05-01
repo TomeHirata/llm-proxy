@@ -10,10 +10,10 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-48f7-a536-85d34a2647cf";
-const ANTHROPIC_AUTH_URL: &str = "https://console.anthropic.com/oauth/authorize";
-const ANTHROPIC_TOKEN_URL: &str = "https://console.anthropic.com/oauth/token";
-const ANTHROPIC_SCOPES: &str = "openid email profile";
+const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const ANTHROPIC_AUTH_URL: &str = "https://claude.ai/oauth/authorize";
+const ANTHROPIC_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
+const ANTHROPIC_SCOPES: &str = "user:inference";
 const FLOW_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,17 +31,16 @@ pub struct AnthropicAccount {
 
 #[derive(Deserialize)]
 struct TokenResponse {
-    #[allow(dead_code)]
     access_token: String,
     refresh_token: Option<String>,
-    #[serde(default)]
-    id_token: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct JwtClaims {
     #[serde(default)]
     email: Option<String>,
+    #[serde(default)]
+    sub: Option<String>,
 }
 
 fn generate_pkce() -> (String, String) {
@@ -61,14 +60,14 @@ fn generate_state() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn parse_jwt_email(token: &str) -> Option<String> {
+fn parse_jwt_display(token: &str) -> Option<String> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
         return None;
     }
     let decoded = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
     let claims: JwtClaims = serde_json::from_slice(&decoded).ok()?;
-    claims.email
+    claims.email.or(claims.sub)
 }
 
 async fn accept_callback(listener: tokio::net::TcpListener) -> Result<String, String> {
@@ -139,13 +138,13 @@ pub async fn start_browser_flow(oauth_path: &std::path::Path) -> Result<Anthropi
     let client = Client::new();
     let resp = client
         .post(ANTHROPIC_TOKEN_URL)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", &code),
-            ("redirect_uri", &redirect_uri),
-            ("client_id", ANTHROPIC_CLIENT_ID),
-            ("code_verifier", &verifier),
-        ])
+        .json(&serde_json::json!({
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": ANTHROPIC_CLIENT_ID,
+            "code_verifier": verifier,
+        }))
         .send()
         .await
         .map_err(|e| format!("Token exchange request failed: {e}"))?;
@@ -168,7 +167,7 @@ pub async fn start_browser_flow(oauth_path: &std::path::Path) -> Result<Anthropi
         .refresh_token
         .ok_or_else(|| "Response missing refresh_token".to_string())?;
 
-    let email = tokens.id_token.as_deref().and_then(parse_jwt_email);
+    let email = parse_jwt_display(&tokens.access_token);
 
     let creds = AnthropicCreds {
         refresh_token,
