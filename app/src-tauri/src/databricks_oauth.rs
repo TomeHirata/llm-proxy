@@ -67,9 +67,53 @@ pub struct DeviceFlowInfo {
     pub interval: u64,
 }
 
+/// Normalize a Databricks workspace URL: ensure https://, keep only scheme+host.
+fn normalize_workspace_url(raw: &str) -> Result<String, String> {
+    let with_scheme = if raw.starts_with("http://") || raw.starts_with("https://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    };
+    // Parse and keep only scheme + host (strip any path, query, fragment)
+    let parsed = reqwest::Url::parse(&with_scheme)
+        .map_err(|e| format!("Invalid workspace URL '{raw}': {e}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("Workspace URL '{raw}' has no host"))?;
+    Ok(format!("https://{host}"))
+}
+
+/// Fetch the OIDC discovery document and return (device_authorization_endpoint, token_endpoint).
+async fn discover_oidc_endpoints(client: &Client, base: &str) -> Option<(String, String)> {
+    let discovery_url = format!("{base}/oidc/.well-known/oauth-authorization-server");
+    let resp = client.get(&discovery_url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let val: serde_json::Value = resp.json().await.ok()?;
+    let device_ep = val
+        .get("device_authorization_endpoint")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)?;
+    let token_ep = val
+        .get("token_endpoint")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)?;
+    Some((device_ep, token_ep))
+}
+
 pub async fn start_device_flow(workspace_url: &str) -> Result<DeviceFlowInfo, String> {
+    let base = normalize_workspace_url(workspace_url)?;
     let client = Client::new();
-    let url = format!("{}/oidc/v1/devicecode", workspace_url.trim_end_matches('/'));
+
+    // Prefer discovered endpoint, fall back to well-known path.
+    let device_ep = if let Some((ep, _)) = discover_oidc_endpoints(&client, &base).await {
+        ep
+    } else {
+        format!("{base}/oidc/v1/devicecode")
+    };
+
+    let url = device_ep;
     let resp = client
         .post(&url)
         .form(&[
@@ -109,8 +153,13 @@ pub async fn poll_device_flow(
     workspace_url: &str,
     oauth_path: &std::path::Path,
 ) -> Result<Option<DatabricksAccount>, String> {
+    let base = normalize_workspace_url(workspace_url)?;
     let client = Client::new();
-    let url = format!("{}/oidc/v1/token", workspace_url.trim_end_matches('/'));
+    let url = if let Some((_, ep)) = discover_oidc_endpoints(&client, &base).await {
+        ep
+    } else {
+        format!("{base}/oidc/v1/token")
+    };
     let resp = client
         .post(&url)
         .form(&[
@@ -166,14 +215,14 @@ pub async fn poll_device_flow(
         } => {
             let display_name = parse_jwt_display_name(&access_token);
             let creds = DatabricksCreds {
-                workspace_url: workspace_url.to_string(),
+                workspace_url: base.clone(),
                 refresh_token,
                 display_name: display_name.clone(),
                 authenticated_at: chrono::Utc::now().timestamp(),
             };
             save_databricks_creds(oauth_path, &creds)?;
             Ok(Some(DatabricksAccount {
-                workspace_url: workspace_url.to_string(),
+                workspace_url: base,
                 display_name,
                 authenticated_at: creds.authenticated_at,
             }))
