@@ -440,7 +440,8 @@ fn apply_codex(model: &str) -> Result<(), String> {
     // Write MCP servers to ~/.codex/mcp.json
     let mcp_path = home_dir().join(".codex").join("mcp.json");
     let servers = mcp_servers::load(&llmproxy_config_dir()).unwrap_or_default();
-    let mcp_json = serde_json::json!({ "mcpServers": mcp_servers::mcp_servers_json(&servers, "codex") });
+    let mcp_json =
+        serde_json::json!({ "mcpServers": mcp_servers::mcp_servers_json(&servers, "codex") });
     std::fs::write(
         &mcp_path,
         serde_json::to_string_pretty(&mcp_json).map_err(|e| e.to_string())?,

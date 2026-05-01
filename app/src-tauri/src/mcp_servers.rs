@@ -264,11 +264,17 @@ pub fn mcp_servers_json(servers: &[McpServer], agent: &str) -> serde_json::Value
                 }
             }
             McpTransport::Stdio => {
-                entry.insert("command".into(), serde_json::Value::String(s.command.clone()));
+                entry.insert(
+                    "command".into(),
+                    serde_json::Value::String(s.command.clone()),
+                );
                 entry.insert(
                     "args".into(),
                     serde_json::Value::Array(
-                        s.args.iter().map(|a| serde_json::Value::String(a.clone())).collect(),
+                        s.args
+                            .iter()
+                            .map(|a| serde_json::Value::String(a.clone()))
+                            .collect(),
                     ),
                 );
                 if !s.env.is_empty() {
