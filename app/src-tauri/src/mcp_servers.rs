@@ -5,9 +5,9 @@ use std::collections::HashMap;
 #[serde(rename_all = "snake_case")]
 pub enum McpTransport {
     #[default]
-    Stdio,
-    Sse,
     Http,
+    Sse,
+    Stdio,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,9 +205,9 @@ struct McpEntry {
 impl McpEntry {
     fn resolve_transport(mut self) -> Self {
         self.transport = match self.transport_type.as_deref() {
-            Some("sse") => McpTransport::Sse,
             Some("http") => McpTransport::Http,
-            _ => McpTransport::Stdio,
+            Some("sse") => McpTransport::Sse,
+            _ => McpTransport::Stdio, // no type field means stdio in existing agent configs
         };
         self
     }

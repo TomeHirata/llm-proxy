@@ -42,7 +42,7 @@ interface FormState {
 
 const emptyForm = (): FormState => ({
   name: "",
-  transport: "stdio",
+  transport: "http",
   command: "",
   args: "",
   env: "",
@@ -265,7 +265,7 @@ export default function McpServersView({ onBack }: Props) {
           <div className="space-y-2">
             <label className="block text-xs text-gray-500">Transport</label>
             <div className="flex gap-2">
-              {(["stdio", "sse", "http"] as McpTransport[]).map((t) => (
+              {(["http", "sse", "stdio"] as McpTransport[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setForm({ ...form, transport: t })}
