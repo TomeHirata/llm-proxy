@@ -18,6 +18,8 @@ pub struct ProviderRegistry {
     /// Providers that manage their own OAuth tokens internally; credential
     /// resolution for these skips the normal header/config/env lookup.
     oauth_managed: std::collections::HashSet<String>,
+    /// Databricks workspace URL (from OAuth or config); used by the admin model-listing endpoint.
+    pub databricks_workspace_url: Option<String>,
 }
 
 impl ProviderRegistry {
@@ -125,11 +127,21 @@ impl ProviderRegistry {
             }
         }
 
+        let databricks_workspace_url = oauth.databricks_workspace_url.clone().or_else(|| {
+            cfg.providers
+                .get("databricks")
+                .and_then(|p| p.endpoint.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        });
+
         Self {
             providers,
             config_creds,
             bedrock_region,
             oauth_managed,
+            databricks_workspace_url,
         }
     }
 
