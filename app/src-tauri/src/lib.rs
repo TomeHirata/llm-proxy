@@ -1,3 +1,5 @@
+mod mcp_servers;
+
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -51,6 +53,11 @@ pub fn run() {
             read_agent_configs,
             apply_agent_config,
             reset_agent_config,
+            read_mcp_servers,
+            add_mcp_server,
+            remove_mcp_server,
+            update_mcp_server,
+            import_mcp_servers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running llmproxy app");
@@ -196,6 +203,10 @@ fn home_dir() -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+}
+
+fn llmproxy_config_dir() -> std::path::PathBuf {
+    home_dir().join(".config").join("llmproxy")
 }
 
 #[derive(serde::Serialize)]
@@ -351,6 +362,9 @@ fn apply_claude_code(model: &str) -> Result<(), String> {
     json["env"] = serde_json::Value::Object(env_map);
     json["model"] = serde_json::Value::String(model.into());
 
+    let servers = mcp_servers::load(&llmproxy_config_dir());
+    json["mcpServers"] = mcp_servers::mcp_servers_json(&servers, "claude_code");
+
     std::fs::write(
         &path,
         serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
@@ -404,17 +418,27 @@ fn apply_codex(model: &str) -> Result<(), String> {
         &path,
         toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?,
     )
+    .map_err(|e| e.to_string())?;
+
+    // Write MCP servers to ~/.codex/mcp.json
+    let mcp_path = home_dir().join(".codex").join("mcp.json");
+    let servers = mcp_servers::load(&llmproxy_config_dir());
+    let mcp_json = serde_json::json!({ "mcpServers": mcp_servers::mcp_servers_json(&servers, "codex") });
+    std::fs::write(
+        &mcp_path,
+        serde_json::to_string_pretty(&mcp_json).map_err(|e| e.to_string())?,
+    )
     .map_err(|e| e.to_string())
 }
 
 fn apply_gemini(model: &str) -> Result<(), String> {
     let dir = home_dir().join(".gemini");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(".env");
+    let env_path = dir.join(".env");
 
     // Preserve unrelated lines; replace or append our keys.
-    let existing = if path.exists() {
-        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
+    let existing = if env_path.exists() {
+        std::fs::read_to_string(&env_path).map_err(|e| e.to_string())?
     } else {
         String::new()
     };
@@ -428,13 +452,26 @@ fn apply_gemini(model: &str) -> Result<(), String> {
         .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
         .map(str::to_string)
         .collect();
-    lines.push(format!(
-        "GOOGLE_GEMINI_BASE_URL=http://localhost:8080/gemini"
-    ));
+    lines.push("GOOGLE_GEMINI_BASE_URL=http://localhost:8080/gemini".into());
     lines.push(format!("GEMINI_MODEL={model}"));
-    lines.push(format!("GEMINI_API_KEY=llmproxy"));
+    lines.push("GEMINI_API_KEY=llmproxy".into());
+    std::fs::write(&env_path, lines.join("\n") + "\n").map_err(|e| e.to_string())?;
 
-    std::fs::write(&path, lines.join("\n") + "\n").map_err(|e| e.to_string())
+    // Write MCP servers to ~/.gemini/settings.json
+    let settings_path = dir.join("settings.json");
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let raw = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let servers = mcp_servers::load(&llmproxy_config_dir());
+    settings["mcpServers"] = mcp_servers::mcp_servers_json(&servers, "gemini");
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -513,4 +550,34 @@ fn reset_gemini() -> Result<(), String> {
         .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
         .collect();
     std::fs::write(&path, filtered.join("\n") + "\n").map_err(|e| e.to_string())
+}
+
+// ── MCP server commands ─────────────────────────────────────────────────────
+
+#[tauri::command]
+fn read_mcp_servers() -> Vec<mcp_servers::McpServer> {
+    mcp_servers::load(&llmproxy_config_dir())
+}
+
+#[tauri::command]
+fn add_mcp_server(server: mcp_servers::McpServerInput) -> Result<mcp_servers::McpServer, String> {
+    mcp_servers::add(&llmproxy_config_dir(), server)
+}
+
+#[tauri::command]
+fn remove_mcp_server(id: String) -> Result<(), String> {
+    mcp_servers::remove(&llmproxy_config_dir(), &id)
+}
+
+#[tauri::command]
+fn update_mcp_server(
+    id: String,
+    server: mcp_servers::McpServerInput,
+) -> Result<mcp_servers::McpServer, String> {
+    mcp_servers::update(&llmproxy_config_dir(), &id, server)
+}
+
+#[tauri::command]
+fn import_mcp_servers() -> Result<Vec<mcp_servers::McpServer>, String> {
+    mcp_servers::import_from_agents(&llmproxy_config_dir(), &home_dir())
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import claudeCodeLogo from "../assets/claude-code-logo.png";
 import codexLogo from "../assets/codex-logo.png";
+import McpServersView from "./McpServersView";
 
 interface AgentStatus {
   config_path: string;
@@ -75,6 +76,7 @@ function splitModel(full: string, defaultProvider: string): { provider: string; 
 }
 
 export default function AgentsTab({ configuredProviders }: Props) {
+  const [showMcp, setShowMcp] = useState(false);
   const [configs, setConfigs] = useState<AllAgentConfigs | null>(null);
   const [providers, setProviders] = useState<Record<AgentKey, string>>({
     claude_code: "",
@@ -153,13 +155,25 @@ export default function AgentsTab({ configuredProviders }: Props) {
 
   const providerOptions = configuredProviders.length > 0 ? configuredProviders : Object.keys(PROVIDER_LABELS);
 
+  if (showMcp) {
+    return <McpServersView onBack={() => setShowMcp(false)} />;
+  }
+
   return (
     <div className="p-5 max-w-2xl space-y-4">
-      <div className="space-y-1">
-        <h2 className="font-semibold text-gray-800">Coding Agents</h2>
-        <p className="text-sm text-gray-500">
-          Route your coding agents through llmproxy to use any configured provider.
-        </p>
+      <div className="flex items-start justify-between">
+        <div className="space-y-1">
+          <h2 className="font-semibold text-gray-800">Coding Agents</h2>
+          <p className="text-sm text-gray-500">
+            Route your coding agents through llmproxy to use any configured provider.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowMcp(true)}
+          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 flex-shrink-0"
+        >
+          <span>⬛</span> MCP Servers
+        </button>
       </div>
 
       {AGENTS.map((agent) => {
