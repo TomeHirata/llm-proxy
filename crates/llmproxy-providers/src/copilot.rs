@@ -124,7 +124,6 @@ impl CopilotProvider {
         rb.header("Authorization", format!("Bearer {token}"))
             .header("Editor-Version", EDITOR_VERSION)
             .header("Copilot-Integration-Id", INTEGRATION_ID)
-            .header("X-GitHub-Api-Version", "2022-11-28")
     }
 
     fn build_body(req: &ChatRequest, model_id: &str, stream: bool) -> serde_json::Value {

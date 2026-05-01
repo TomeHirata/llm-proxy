@@ -90,7 +90,7 @@ impl CodexOAuthProvider {
                 ("grant_type", "refresh_token"),
                 ("refresh_token", current_refresh.as_str()),
                 ("client_id", CLIENT_ID),
-                ("scope", "openid profile email"),
+                ("scope", "openid profile email offline_access model.request"),
             ])
             .send()
             .await?;
