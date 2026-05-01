@@ -218,14 +218,9 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
     setError(null);
   };
 
-  const save = async (name: string) => {
+  const applyPatch = async (name: string, patch: ProviderPatch) => {
     setSaving(true);
     setError(null);
-    const patch: ProviderPatch = {};
-    if (draft.api_key) patch.api_key = draft.api_key;
-    if (draft.endpoint) patch.endpoint = draft.endpoint;
-    if (draft.api_version) patch.api_version = draft.api_version;
-    if (draft.region) patch.region = draft.region;
     try {
       await api.updateProvider(name, patch);
       setEditing(null);
@@ -247,6 +242,24 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
     } finally {
       setSaving(false);
     }
+  };
+
+  const save = async (name: string) => {
+    const patch: ProviderPatch = {};
+    if (draft.api_key) patch.api_key = draft.api_key;
+    if (draft.endpoint) patch.endpoint = draft.endpoint;
+    if (draft.api_version) patch.api_version = draft.api_version;
+    if (draft.region) patch.region = draft.region;
+    await applyPatch(name, patch);
+  };
+
+  const clearProvider = async (name: string, fields: string[]) => {
+    const patch: ProviderPatch = {};
+    if (fields.includes("api_key")) patch.api_key = "";
+    if (fields.includes("endpoint")) patch.endpoint = "";
+    if (fields.includes("api_version")) patch.api_version = "";
+    if (fields.includes("region")) patch.region = "";
+    await applyPatch(name, patch);
   };
 
   if (!proxyOnline) {
@@ -436,6 +449,15 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
                     >
                       Cancel
                     </button>
+                    {configured && (
+                      <button
+                        onClick={() => clearProvider(name, fields)}
+                        disabled={saving}
+                        className="ml-auto px-3 py-1.5 text-red-500 rounded text-sm hover:bg-red-50 disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -565,6 +587,15 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
                     >
                       Cancel
                     </button>
+                    {configured && (
+                      <button
+                        onClick={() => clearProvider(name, fields)}
+                        disabled={saving}
+                        className="ml-auto px-3 py-1.5 text-red-500 rounded text-sm hover:bg-red-50 disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    )}
                   </div>
                 </div>
               )}

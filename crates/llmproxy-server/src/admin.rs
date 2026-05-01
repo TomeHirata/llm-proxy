@@ -239,17 +239,18 @@ fn write_provider_to_config(
 
     let entry = cfg.providers.entry(provider.to_string()).or_default();
 
-    if patch.api_key.is_some() {
-        entry.api_key = patch.api_key;
+    // Some("") means "clear this field"; None means "leave unchanged".
+    if let Some(v) = patch.api_key {
+        entry.api_key = if v.is_empty() { None } else { Some(v) };
     }
-    if patch.endpoint.is_some() {
-        entry.endpoint = patch.endpoint;
+    if let Some(v) = patch.endpoint {
+        entry.endpoint = if v.is_empty() { None } else { Some(v) };
     }
-    if patch.api_version.is_some() {
-        entry.api_version = patch.api_version;
+    if let Some(v) = patch.api_version {
+        entry.api_version = if v.is_empty() { None } else { Some(v) };
     }
-    if patch.region.is_some() {
-        entry.region = patch.region;
+    if let Some(v) = patch.region {
+        entry.region = if v.is_empty() { None } else { Some(v) };
     }
 
     let yaml = serde_yaml::to_string(&cfg)?;
