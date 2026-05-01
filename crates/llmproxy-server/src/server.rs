@@ -1444,6 +1444,7 @@ mod tests {
             registry: std::sync::Arc::new(ProviderRegistry::from_config(
                 &cfg,
                 &OAuthTokens::default(),
+                std::path::Path::new("/tmp"),
             )),
             usage_store: None,
             http: reqwest::Client::new(),

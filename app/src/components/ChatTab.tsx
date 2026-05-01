@@ -168,12 +168,19 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
           (map[currentProvider]?.length ? currentProvider : null) ??
           configuredProviders.find((p) => map[p]?.length) ??
           currentProvider;
-        setSelectedModel((currentModel) => {
-          if (target === currentProvider && map[target]?.includes(currentModel)) {
-            return currentModel;
-          }
-          return map[target]?.[0] ?? "";
-        });
+        if (map[target]?.length) {
+          setSelectedModel((currentModel) => {
+            if (target === currentProvider && map[target]?.includes(currentModel)) {
+              return currentModel;
+            }
+            return map[target]?.[0] ?? "";
+          });
+          setUseCustom(false);
+        } else {
+          setSelectedModel("");
+          setUseCustom(true);
+          setCustomModel(`${target}/`);
+        }
         return target;
       });
     });
@@ -181,7 +188,15 @@ export default function ChatTab({ proxyOnline, configuredProviders }: Props) {
 
   const handleProviderChange = (p: string) => {
     setSelectedProvider(p);
-    setSelectedModel(modelsByProvider[p]?.[0] ?? "");
+    const models = modelsByProvider[p] ?? [];
+    if (models.length > 0) {
+      setSelectedModel(models[0]);
+      setUseCustom(false);
+    } else {
+      setSelectedModel("");
+      setUseCustom(true);
+      setCustomModel(`${p}/`);
+    }
   };
 
   const applyConvoModel = useCallback((model: string) => {

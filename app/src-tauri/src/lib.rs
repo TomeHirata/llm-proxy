@@ -1,5 +1,7 @@
+mod anthropic_oauth;
 mod codex_oauth;
 mod copilot_auth;
+mod databricks_oauth;
 mod mcp_servers;
 mod oauth_store;
 
@@ -75,6 +77,12 @@ pub fn run() {
             codex_poll_device_flow,
             codex_oauth_status,
             codex_oauth_logout,
+            databricks_start_browser_flow,
+            databricks_oauth_status,
+            databricks_oauth_logout,
+            anthropic_start_browser_flow,
+            anthropic_oauth_status,
+            anthropic_oauth_logout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running llmproxy app");
@@ -688,6 +696,57 @@ fn codex_oauth_status() -> Option<codex_oauth::CodexAccount> {
 #[tauri::command]
 async fn codex_oauth_logout(app: tauri::AppHandle) -> Result<(), String> {
     codex_oauth::clear_codex_creds(&oauth_config_dir())?;
+    let _ = do_stop_proxy(&app).await;
+    let _ = do_start_proxy(&app).await;
+    Ok(())
+}
+
+// ── Databricks OAuth commands ────────────────────────────────────────────────
+
+#[tauri::command]
+async fn databricks_start_browser_flow(
+    app: tauri::AppHandle,
+    workspace_url: String,
+) -> Result<databricks_oauth::DatabricksAccount, String> {
+    let result = databricks_oauth::start_browser_flow(&workspace_url, &oauth_config_dir()).await?;
+    let _ = do_stop_proxy(&app).await;
+    let _ = do_start_proxy(&app).await;
+    Ok(result)
+}
+
+#[tauri::command]
+fn databricks_oauth_status() -> Option<databricks_oauth::DatabricksAccount> {
+    databricks_oauth::read_databricks_account(&oauth_config_dir())
+}
+
+#[tauri::command]
+async fn databricks_oauth_logout(app: tauri::AppHandle) -> Result<(), String> {
+    databricks_oauth::clear_databricks_creds(&oauth_config_dir())?;
+    let _ = do_stop_proxy(&app).await;
+    let _ = do_start_proxy(&app).await;
+    Ok(())
+}
+
+// ── Anthropic OAuth commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+async fn anthropic_start_browser_flow(
+    app: tauri::AppHandle,
+) -> Result<anthropic_oauth::AnthropicAccount, String> {
+    let result = anthropic_oauth::start_browser_flow(&oauth_config_dir()).await?;
+    let _ = do_stop_proxy(&app).await;
+    let _ = do_start_proxy(&app).await;
+    Ok(result)
+}
+
+#[tauri::command]
+fn anthropic_oauth_status() -> Option<anthropic_oauth::AnthropicAccount> {
+    anthropic_oauth::read_anthropic_account(&oauth_config_dir())
+}
+
+#[tauri::command]
+async fn anthropic_oauth_logout(app: tauri::AppHandle) -> Result<(), String> {
+    anthropic_oauth::clear_anthropic_creds(&oauth_config_dir())?;
     let _ = do_stop_proxy(&app).await;
     let _ = do_start_proxy(&app).await;
     Ok(())

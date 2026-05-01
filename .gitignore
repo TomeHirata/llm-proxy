@@ -3,3 +3,6 @@
 Cargo.lock.bak
 .env
 .DS_Store
+llmproxy.dmg
+llmproxy-v*/
+*.dmg

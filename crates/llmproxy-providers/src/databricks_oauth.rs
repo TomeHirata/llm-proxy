@@ -1,5 +1,5 @@
-//! Codex OAuth provider — wraps the OpenAI passthrough provider but
-//! automatically refreshes its access token using a stored refresh token.
+//! Databricks OAuth provider — uses a stored refresh token to obtain short-lived
+//! access tokens and routes requests to the Databricks serving-endpoints API.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,13 +14,12 @@ use llmproxy_core::{
 };
 use tokio::sync::RwLock;
 
-const OPENAI_BASE: &str = "https://api.openai.com/v1";
-const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
-const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CLIENT_ID: &str = "databricks-cli";
 
 #[derive(Debug, Clone)]
 struct CachedToken {
     token: String,
+    /// Unix timestamp (seconds) when this token expires.
     expires_at: i64,
 }
 
@@ -30,31 +29,24 @@ impl CachedToken {
     }
 }
 
-pub struct CodexOAuthProvider {
+pub struct DatabricksOAuthProvider {
     client: reqwest::Client,
-    /// Mutable so we can rotate the refresh token on each use.
-    refresh_token: Arc<RwLock<String>>,
+    workspace_url: String,
+    refresh_token: String,
     cache: Arc<RwLock<Option<CachedToken>>>,
-    /// Called with the new refresh token whenever it rotates.
-    token_saver: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
-impl CodexOAuthProvider {
-    pub fn new(refresh_token: impl Into<String>) -> Self {
+impl DatabricksOAuthProvider {
+    pub fn new(workspace_url: impl Into<String>, refresh_token: impl Into<String>) -> Self {
         Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(300))
                 .build()
                 .expect("reqwest client"),
-            refresh_token: Arc::new(RwLock::new(refresh_token.into())),
+            workspace_url: workspace_url.into().trim_end_matches('/').to_string(),
+            refresh_token: refresh_token.into(),
             cache: Arc::new(RwLock::new(None)),
-            token_saver: None,
         }
-    }
-
-    pub fn with_token_saver(mut self, saver: impl Fn(String) + Send + Sync + 'static) -> Self {
-        self.token_saver = Some(Arc::new(saver));
-        self
     }
 
     async fn get_token(&self) -> Result<String, ProxyError> {
@@ -81,16 +73,14 @@ impl CodexOAuthProvider {
     }
 
     async fn refresh_access_token(&self) -> Result<CachedToken, ProxyError> {
-        let current_refresh = self.refresh_token.read().await.clone();
+        let token_url = format!("{}/oidc/v1/token", self.workspace_url);
         let resp = self
             .client
-            .post(TOKEN_URL)
-            .header("Content-Type", "application/x-www-form-urlencoded")
+            .post(&token_url)
             .form(&[
                 ("grant_type", "refresh_token"),
-                ("refresh_token", current_refresh.as_str()),
+                ("refresh_token", &self.refresh_token),
                 ("client_id", CLIENT_ID),
-                ("scope", "openid profile email offline_access model.request"),
             ])
             .send()
             .await?;
@@ -101,7 +91,7 @@ impl CodexOAuthProvider {
             return Err(match status {
                 reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
                     ProxyError::Config(format!(
-                        "Codex token refresh failed ({}): {body}\n\
+                        "Databricks token refresh failed ({}): {body}\n\
                          Please re-authenticate via the llmproxy app.",
                         status.as_u16()
                     ))
@@ -117,22 +107,12 @@ impl CodexOAuthProvider {
         struct Resp {
             access_token: String,
             #[serde(default)]
-            refresh_token: Option<String>,
-            #[serde(default)]
             expires_in: Option<i64>,
         }
         let body: Resp = resp
             .json()
             .await
-            .map_err(|e| ProxyError::Config(format!("Failed to parse Codex token: {e}")))?;
-
-        // Rotate refresh token if a new one was returned.
-        if let Some(new_rt) = body.refresh_token {
-            *self.refresh_token.write().await = new_rt.clone();
-            if let Some(ref saver) = self.token_saver {
-                saver(new_rt);
-            }
-        }
+            .map_err(|e| ProxyError::Config(format!("Failed to parse Databricks token: {e}")))?;
 
         let expires_at = chrono::Utc::now().timestamp() + body.expires_in.unwrap_or(3600);
         Ok(CachedToken {
@@ -150,20 +130,16 @@ impl CodexOAuthProvider {
         } else if let Some(obj) = body.as_object_mut() {
             obj.remove("stream");
         }
-        // OpenAI's Responses API uses max_completion_tokens.
-        if let Some(obj) = body.as_object_mut() {
-            if let Some(v) = obj.remove("max_tokens") {
-                if !v.is_null() {
-                    obj.insert("max_completion_tokens".into(), v);
-                }
-            }
-        }
         body
     }
 }
 
 #[async_trait]
-impl Provider for CodexOAuthProvider {
+impl Provider for DatabricksOAuthProvider {
+    async fn fetch_token(&self, _cred: &Credential) -> Result<String, ProxyError> {
+        self.get_token().await
+    }
+
     async fn chat(
         &self,
         req: ChatRequest,
@@ -172,9 +148,13 @@ impl Provider for CodexOAuthProvider {
     ) -> Result<ChatResponse, ProxyError> {
         let token = self.get_token().await?;
         let body = Self::build_body(&req, model_id, false);
+        let url = format!(
+            "{}/serving-endpoints/v1/chat/completions",
+            self.workspace_url
+        );
         let resp = self
             .client
-            .post(format!("{OPENAI_BASE}/chat/completions"))
+            .post(&url)
             .bearer_auth(&token)
             .json(&body)
             .send()
@@ -195,9 +175,13 @@ impl Provider for CodexOAuthProvider {
     ) -> Result<BoxStream<'static, Result<Bytes, ProxyError>>, ProxyError> {
         let token = self.get_token().await?;
         let body = Self::build_body(&req, model_id, true);
+        let url = format!(
+            "{}/serving-endpoints/v1/chat/completions",
+            self.workspace_url
+        );
         let resp = self
             .client
-            .post(format!("{OPENAI_BASE}/chat/completions"))
+            .post(&url)
             .bearer_auth(&token)
             .json(&body)
             .send()
@@ -219,7 +203,7 @@ mod tests {
 
     fn simple_req() -> ChatRequest {
         ChatRequest {
-            model: "codex_oauth/gpt-4o".into(),
+            model: "databricks/databricks-meta-llama-3-1-70b-instruct".into(),
             messages: vec![ChatMessage {
                 role: "user".into(),
                 content: MessageContent::Text("hi".into()),
@@ -240,28 +224,26 @@ mod tests {
     }
 
     #[test]
-    fn build_body_translates_max_tokens() {
-        let mut req = simple_req();
-        req.max_tokens = Some(512);
-        let body = CodexOAuthProvider::build_body(&req, "gpt-4o", false);
-        assert_eq!(body["max_completion_tokens"], serde_json::json!(512));
-        assert!(body.get("max_tokens").is_none());
+    fn build_body_sets_model() {
+        let req = simple_req();
+        let body = DatabricksOAuthProvider::build_body(
+            &req,
+            "databricks-meta-llama-3-1-70b-instruct",
+            false,
+        );
+        assert_eq!(
+            body["model"],
+            serde_json::json!("databricks-meta-llama-3-1-70b-instruct")
+        );
+        assert!(body.get("stream").is_none());
     }
 
     #[test]
-    fn build_body_stream_options_included() {
+    fn build_body_stream_adds_stream_options() {
         let req = simple_req();
-        let body = CodexOAuthProvider::build_body(&req, "gpt-4o", true);
+        let body = DatabricksOAuthProvider::build_body(&req, "meta-llama", true);
         assert_eq!(body["stream"], serde_json::json!(true));
         assert!(body["stream_options"].is_object());
-    }
-
-    #[test]
-    fn build_body_non_stream_removes_stream_key() {
-        let mut req = simple_req();
-        req.stream = Some(true);
-        let body = CodexOAuthProvider::build_body(&req, "gpt-4o", false);
-        assert!(body.get("stream").is_none());
     }
 
     #[test]

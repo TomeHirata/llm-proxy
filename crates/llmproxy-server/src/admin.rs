@@ -267,23 +267,20 @@ async fn provider_models_handler(
     State(s): State<AppState>,
     Path(provider): Path<String>,
 ) -> impl IntoResponse {
-    let cred = match s.registry.credential_for(&provider, None) {
-        Ok(c) => c,
+    if provider == "bedrock" {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": "bedrock model listing not supported"})),
+        )
+            .into_response();
+    }
+
+    let token = match s.registry.resolve_token(&provider, None).await {
+        Ok(t) => t,
         Err(e) => {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": e.to_string()})),
-            )
-                .into_response()
-        }
-    };
-
-    let token = match cred {
-        llmproxy_core::provider::Credential::BearerToken(t) => t,
-        llmproxy_core::provider::Credential::AwsSigV4 { .. } => {
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({"error": "bedrock model listing not supported"})),
             )
                 .into_response()
         }
@@ -305,16 +302,21 @@ async fn provider_models_handler(
                 .providers
                 .get("databricks")
                 .and_then(|p| p.endpoint.as_deref())
-                .unwrap_or_default()
-                .trim_end_matches('/')
-                .to_string();
-            if workspace_url.is_empty() {
+                .map(|u| u.trim_end_matches('/').to_string())
+                .filter(|u| !u.is_empty())
+                .or_else(|| {
+                    s.registry
+                        .databricks_workspace_url
+                        .as_deref()
+                        .map(|u| u.trim_end_matches('/').to_string())
+                });
+            let Some(workspace_url) = workspace_url else {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "databricks endpoint not configured"})),
+                    Json(json!({"error": "databricks workspace URL not configured — set endpoint in config or sign in via OAuth"})),
                 )
                     .into_response();
-            }
+            };
             fetch_databricks_models(&s.http, &token, &workspace_url).await
         }
         _ => {
