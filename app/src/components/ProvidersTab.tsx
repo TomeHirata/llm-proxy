@@ -736,6 +736,15 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
                   >
                     Cancel
                   </button>
+                  {configured && (
+                    <button
+                      onClick={() => clearProvider(name, fields)}
+                      disabled={saving}
+                      className="ml-auto px-3 py-1.5 text-red-500 rounded text-sm hover:bg-red-50 disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  )}
                 </div>
               </div>
             )}
