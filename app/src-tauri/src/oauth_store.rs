@@ -12,6 +12,10 @@ pub struct OAuthStore {
     pub copilot: Option<crate::copilot_auth::CopilotCreds>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex: Option<crate::codex_oauth::CodexCreds>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub databricks: Option<crate::databricks_oauth::DatabricksCreds>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic: Option<crate::anthropic_oauth::AnthropicCreds>,
 }
 
 /// `dir` is the config directory (e.g. `~/.config/llmproxy`).

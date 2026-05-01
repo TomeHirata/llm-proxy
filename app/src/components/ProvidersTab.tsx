@@ -7,7 +7,7 @@ type FieldOverrides = {
   endpoint?: { label?: string; placeholder?: string };
 };
 
-type ProviderKind = "apikey" | "oauth_copilot" | "oauth_codex";
+type ProviderKind = "apikey" | "oauth_copilot" | "oauth_codex" | "oauth_databricks" | "oauth_anthropic";
 
 const ALL_PROVIDERS: {
   name: string;
@@ -17,12 +17,12 @@ const ALL_PROVIDERS: {
   fieldOverrides?: FieldOverrides;
 }[] = [
   { name: "openai", label: "OpenAI", kind: "apikey", fields: ["api_key"] },
-  { name: "anthropic", label: "Anthropic", kind: "apikey", fields: ["api_key"] },
+  { name: "anthropic", label: "Anthropic", kind: "oauth_anthropic", fields: ["api_key"] },
   { name: "gemini", label: "Gemini", kind: "apikey", fields: ["api_key"] },
   {
     name: "databricks",
     label: "Databricks",
-    kind: "apikey",
+    kind: "oauth_databricks",
     fields: ["endpoint", "api_key"],
     fieldOverrides: {
       endpoint: { label: "Workspace URL", placeholder: "https://my-workspace.azuredatabricks.net" },
@@ -49,6 +49,17 @@ interface CodexAccount {
   authenticated_at: number;
 }
 
+interface DatabricksAccount {
+  workspace_url: string;
+  display_name: string | null;
+  authenticated_at: number;
+}
+
+interface AnthropicAccount {
+  email: string | null;
+  authenticated_at: number;
+}
+
 interface DeviceFlowInfo {
   device_code: string;
   user_code: string;
@@ -65,6 +76,8 @@ interface OAuthFlowState {
   interval: number;
   polling: boolean;
   error: string;
+  /** For Databricks device code: the workspace URL used to poll */
+  workspaceUrl?: string;
 }
 
 interface Props {
@@ -84,6 +97,8 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
   // OAuth state
   const [copilotAccount, setCopilotAccount] = useState<CopilotAccount | null>(null);
   const [codexAccount, setCodexAccount] = useState<CodexAccount | null>(null);
+  const [databricksAccount, setDatabricksAccount] = useState<DatabricksAccount | null>(null);
+  const [anthropicAccount, setAnthropicAccount] = useState<AnthropicAccount | null>(null);
   const [oauthFlow, setOAuthFlow] = useState<OAuthFlowState | null>(null);
   const [oauthBusy, setOAuthBusy] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -96,6 +111,14 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
     try {
       const d = await invoke<CodexAccount | null>("codex_oauth_status");
       setCodexAccount(d);
+    } catch { /* non-fatal */ }
+    try {
+      const db = await invoke<DatabricksAccount | null>("databricks_oauth_status");
+      setDatabricksAccount(db);
+    } catch { /* non-fatal */ }
+    try {
+      const anth = await invoke<AnthropicAccount | null>("anthropic_oauth_status");
+      setAnthropicAccount(anth);
     } catch { /* non-fatal */ }
   }, []);
 
@@ -118,6 +141,17 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
           });
           if (account) {
             setCopilotAccount(account);
+            setOAuthFlow(null);
+            setOAuthBusy(null);
+            return;
+          }
+        } else if (oauthFlow.providerName === "databricks") {
+          const account = await invoke<DatabricksAccount | null>("databricks_poll_device_flow", {
+            deviceCode: oauthFlow.deviceCode,
+            workspaceUrl: oauthFlow.workspaceUrl ?? "",
+          });
+          if (account) {
+            setDatabricksAccount(account);
             setOAuthFlow(null);
             setOAuthBusy(null);
             return;
@@ -145,23 +179,42 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
     return () => { if (pollTimer.current) clearTimeout(pollTimer.current); };
   }, [oauthFlow?.polling, oauthFlow?.deviceCode, oauthFlow?.providerName, oauthFlow?.interval]);
 
-  const startOAuth = async (providerName: string) => {
+  const startOAuth = async (providerName: string, workspaceUrl?: string) => {
     if (pollTimer.current) clearTimeout(pollTimer.current);
     setOAuthBusy(providerName);
     setOAuthFlow(null);
     try {
-      const info = await invoke<DeviceFlowInfo>(
-        providerName === "copilot" ? "copilot_start_device_flow" : "codex_start_device_flow"
-      );
-      setOAuthFlow({
-        providerName,
-        deviceCode: info.device_code,
-        userCode: info.user_code,
-        verificationUri: info.verification_uri,
-        interval: info.interval,
-        polling: true,
-        error: "",
-      });
+      if (providerName === "databricks") {
+        if (!workspaceUrl) {
+          setOAuthFlow({ providerName, deviceCode: "", userCode: "", verificationUri: "", interval: 5, polling: false, error: "Workspace URL is required. Configure it above first." });
+          setOAuthBusy(null);
+          return;
+        }
+        const info = await invoke<DeviceFlowInfo>("databricks_start_device_flow", { workspaceUrl });
+        setOAuthFlow({
+          providerName,
+          deviceCode: info.device_code,
+          userCode: info.user_code,
+          verificationUri: info.verification_uri,
+          interval: info.interval,
+          polling: true,
+          error: "",
+          workspaceUrl,
+        });
+      } else {
+        const info = await invoke<DeviceFlowInfo>(
+          providerName === "copilot" ? "copilot_start_device_flow" : "codex_start_device_flow"
+        );
+        setOAuthFlow({
+          providerName,
+          deviceCode: info.device_code,
+          userCode: info.user_code,
+          verificationUri: info.verification_uri,
+          interval: info.interval,
+          polling: true,
+          error: "",
+        });
+      }
     } catch (e) {
       setOAuthFlow({ providerName, deviceCode: "", userCode: "", verificationUri: "", interval: 5, polling: false, error: String(e) });
       setOAuthBusy(null);
@@ -180,9 +233,15 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
       if (providerName === "copilot") {
         await invoke("copilot_oauth_logout");
         setCopilotAccount(null);
-      } else {
+      } else if (providerName === "codex_oauth") {
         await invoke("codex_oauth_logout");
         setCodexAccount(null);
+      } else if (providerName === "databricks") {
+        await invoke("databricks_oauth_logout");
+        setDatabricksAccount(null);
+      } else if (providerName === "anthropic") {
+        await invoke("anthropic_oauth_logout");
+        setAnthropicAccount(null);
       }
     } catch { /* non-fatal */ }
     finally { setOAuthBusy(null); }
@@ -258,6 +317,7 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
         const configured = configuredProviders.includes(name);
         const isEditing = editing === name;
 
+        // Pure device-code OAuth providers (Copilot, Codex)
         if (kind === "oauth_copilot" || kind === "oauth_codex") {
           const account = kind === "oauth_copilot" ? copilotAccount : codexAccount;
           const isBusy = oauthBusy === name;
@@ -338,6 +398,280 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
               {activeFlow?.error && (
                 <p className="text-xs text-red-500 mt-2">{activeFlow.error}</p>
               )}
+            </div>
+          );
+        }
+
+        // Databricks: API key form + OAuth device code section
+        if (kind === "oauth_databricks") {
+          const account = databricksAccount;
+          const isBusy = oauthBusy === name;
+          const activeFlow = oauthFlow?.providerName === name ? oauthFlow : null;
+          const workspaceUrl = cfg?.providers[name]?.endpoint ?? "";
+          const displayName = account
+            ? (account.display_name ?? account.workspace_url)
+            : null;
+
+          return (
+            <div key={name} className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
+              {/* Header row */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-gray-800">{label}</span>
+                  <span
+                    className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                      configured ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+                    }`}
+                  >
+                    {configured ? "Configured" : "Not configured"}
+                  </span>
+                  {saved === name && (
+                    <span className="text-xs text-green-600 font-medium">
+                      {restarting ? "Restarting proxy…" : "✓ Saved & restarted"}
+                    </span>
+                  )}
+                </div>
+                {!isEditing && (
+                  <button
+                    onClick={() => startEdit(name)}
+                    className="text-sm text-blue-600 hover:text-blue-700"
+                  >
+                    {configured ? "Edit" : "Configure"}
+                  </button>
+                )}
+              </div>
+
+              {/* API key edit form */}
+              {isEditing && (
+                <div className="space-y-2">
+                  {fields.includes("endpoint") && (
+                    <Field
+                      label={fieldOverrides?.endpoint?.label ?? "Endpoint"}
+                      value={draft.endpoint}
+                      onChange={(v) => setDraft({ ...draft, endpoint: v })}
+                      placeholder={fieldOverrides?.endpoint?.placeholder ?? "https://..."}
+                    />
+                  )}
+                  {fields.includes("api_key") && (
+                    <Field
+                      label={fieldOverrides?.api_key?.label ?? "API Key"}
+                      value={draft.api_key}
+                      onChange={(v) => setDraft({ ...draft, api_key: v })}
+                      secret
+                      placeholder={
+                        cfg?.providers[name]?.api_key === "***"
+                          ? "● ● ● ● ● ●  (leave blank to keep current)"
+                          : (fieldOverrides?.api_key?.placeholder ?? "dapi-...")
+                      }
+                    />
+                  )}
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={() => save(name)}
+                      disabled={saving}
+                      className="px-3 py-1.5 bg-blue-500 text-white rounded text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
+                    >
+                      {saving ? "Saving…" : "Save"}
+                    </button>
+                    <button
+                      onClick={() => setEditing(null)}
+                      className="px-3 py-1.5 text-gray-600 rounded text-sm hover:bg-gray-100"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* OAuth section */}
+              <div className="border-t border-gray-100 pt-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-600 font-medium">OAuth (device code)</span>
+                    {account && (
+                      <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700">
+                        Active
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {account ? (
+                      <>
+                        <span className="text-xs text-gray-500">{displayName}</span>
+                        <button
+                          onClick={() => oauthLogout(name)}
+                          disabled={isBusy}
+                          className="text-xs px-3 py-1.5 rounded-lg text-red-500 bg-red-50 hover:bg-red-100 disabled:opacity-40"
+                        >
+                          {isBusy ? "Signing out…" : "Sign out"}
+                        </button>
+                      </>
+                    ) : activeFlow ? (
+                      <button
+                        onClick={cancelOAuth}
+                        className="text-xs px-3 py-1.5 rounded-lg text-gray-500 bg-gray-100 hover:bg-gray-200"
+                      >
+                        Cancel
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => startOAuth(name, workspaceUrl)}
+                        disabled={isBusy || !workspaceUrl}
+                        title={!workspaceUrl ? "Configure workspace URL above first" : undefined}
+                        className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-white hover:bg-gray-700 disabled:opacity-40"
+                      >
+                        {isBusy ? "Starting…" : "Sign in with Databricks"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {!workspaceUrl && !account && (
+                  <p className="text-xs text-gray-400 mt-1">Configure a workspace URL above to enable OAuth sign-in.</p>
+                )}
+                {activeFlow?.polling && (
+                  <div className="mt-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5 space-y-1.5">
+                    <p className="text-xs text-blue-800 font-medium">Open this URL and enter the code below:</p>
+                    <a
+                      href={activeFlow.verificationUri}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-blue-600 underline break-all"
+                    >
+                      {activeFlow.verificationUri}
+                    </a>
+                    <div className="flex items-center gap-2">
+                      <code className="text-sm font-mono font-bold tracking-widest text-blue-900 bg-blue-100 px-2 py-0.5 rounded">
+                        {activeFlow.userCode}
+                      </code>
+                      <span className="text-xs text-blue-500 animate-pulse">Waiting…</span>
+                    </div>
+                  </div>
+                )}
+                {activeFlow?.error && (
+                  <p className="text-xs text-red-500 mt-1">{activeFlow.error}</p>
+                )}
+              </div>
+            </div>
+          );
+        }
+
+        // Anthropic: API key form + OAuth browser PKCE section
+        if (kind === "oauth_anthropic") {
+          const account = anthropicAccount;
+          const isBusy = oauthBusy === name;
+          const displayName = account?.email ?? null;
+
+          return (
+            <div key={name} className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
+              {/* Header row */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-gray-800">{label}</span>
+                  <span
+                    className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                      configured ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+                    }`}
+                  >
+                    {configured ? "Configured" : "Not configured"}
+                  </span>
+                  {saved === name && (
+                    <span className="text-xs text-green-600 font-medium">
+                      {restarting ? "Restarting proxy…" : "✓ Saved & restarted"}
+                    </span>
+                  )}
+                </div>
+                {!isEditing && (
+                  <button
+                    onClick={() => startEdit(name)}
+                    className="text-sm text-blue-600 hover:text-blue-700"
+                  >
+                    {configured ? "Edit" : "Configure"}
+                  </button>
+                )}
+              </div>
+
+              {/* API key edit form */}
+              {isEditing && (
+                <div className="space-y-2">
+                  <Field
+                    label="API Key"
+                    value={draft.api_key}
+                    onChange={(v) => setDraft({ ...draft, api_key: v })}
+                    secret
+                    placeholder={
+                      cfg?.providers[name]?.api_key === "***"
+                        ? "● ● ● ● ● ●  (leave blank to keep current)"
+                        : "sk-ant-..."
+                    }
+                  />
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={() => save(name)}
+                      disabled={saving}
+                      className="px-3 py-1.5 bg-blue-500 text-white rounded text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
+                    >
+                      {saving ? "Saving…" : "Save"}
+                    </button>
+                    <button
+                      onClick={() => setEditing(null)}
+                      className="px-3 py-1.5 text-gray-600 rounded text-sm hover:bg-gray-100"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* OAuth section */}
+              <div className="border-t border-gray-100 pt-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-600 font-medium">OAuth (browser)</span>
+                    {account && (
+                      <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700">
+                        Active — overrides API key
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {account ? (
+                      <>
+                        {displayName && <span className="text-xs text-gray-500">{displayName}</span>}
+                        <button
+                          onClick={() => oauthLogout(name)}
+                          disabled={isBusy}
+                          className="text-xs px-3 py-1.5 rounded-lg text-red-500 bg-red-50 hover:bg-red-100 disabled:opacity-40"
+                        >
+                          {isBusy ? "Signing out…" : "Sign out"}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={async () => {
+                          setOAuthBusy(name);
+                          try {
+                            const acct = await invoke<AnthropicAccount>("anthropic_start_browser_flow");
+                            setAnthropicAccount(acct);
+                          } catch (e) {
+                            setError(String(e));
+                          } finally {
+                            setOAuthBusy(null);
+                          }
+                        }}
+                        disabled={isBusy}
+                        className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-white hover:bg-gray-700 disabled:opacity-40"
+                      >
+                        {isBusy ? (
+                          <span className="flex items-center gap-1">
+                            <span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />
+                            Waiting for browser…
+                          </span>
+                        ) : "Sign in with Anthropic"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           );
         }
