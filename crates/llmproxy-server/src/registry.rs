@@ -15,6 +15,8 @@ pub struct ProviderRegistry {
     config_creds: HashMap<String, Credential>,
     /// Config-file region (used for Bedrock when no `AWS_REGION` env var).
     bedrock_region: Option<String>,
+    /// Databricks access token from OAuth flow.
+    databricks_oauth_token: Option<String>,
 }
 
 impl ProviderRegistry {
@@ -61,20 +63,21 @@ impl ProviderRegistry {
             }
         }
 
-        // Databricks requires a non-empty workspace URL; treat whitespace-only
-        // (e.g. unset ${ENV_VAR} interpolation) the same as absent.
-        if let Some(p) = cfg.providers.get("databricks") {
-            if let Some(endpoint) = p
-                .endpoint
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                providers.insert(
-                    "databricks".into(),
-                    Arc::new(PassthroughProvider::databricks(endpoint.to_string())),
-                );
-            }
+        // Databricks: prefer config endpoint, fall back to workspace URL saved at OAuth time.
+        let databricks_endpoint = cfg
+            .providers
+            .get("databricks")
+            .and_then(|p| p.endpoint.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| oauth.databricks_workspace_url.clone());
+
+        if let Some(endpoint) = databricks_endpoint {
+            providers.insert(
+                "databricks".into(),
+                Arc::new(PassthroughProvider::databricks(endpoint)),
+            );
         }
 
         for (name, p) in &cfg.providers {
@@ -90,6 +93,7 @@ impl ProviderRegistry {
             providers,
             config_creds,
             bedrock_region,
+            databricks_oauth_token: oauth.databricks_access_token.clone(),
         }
     }
 
@@ -175,6 +179,14 @@ impl ProviderRegistry {
 
         if let Some(cred) = self.config_creds.get(provider_name) {
             return Ok(cred.clone());
+        }
+
+        // Databricks OAuth access token (from browser PKCE flow) takes priority
+        // over the env var so users who signed in via the app don't need DATABRICKS_TOKEN.
+        if provider_name == "databricks" {
+            if let Some(token) = &self.databricks_oauth_token {
+                return Ok(Credential::BearerToken(token.clone()));
+            }
         }
 
         if let Some(env_key) = env_key_for(provider_name) {

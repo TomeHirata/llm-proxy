@@ -21,9 +21,10 @@ struct OidcDiscovery {
 
 #[derive(Deserialize)]
 struct TokenResponse {
-    #[allow(dead_code)]
     access_token: String,
     refresh_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -39,7 +40,9 @@ struct JwtClaims {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabricksCreds {
     pub workspace_url: String,
+    pub access_token: String,
     pub refresh_token: String,
+    pub expires_at: i64,
     pub display_name: Option<String>,
     pub authenticated_at: i64,
 }
@@ -226,12 +229,16 @@ pub async fn start_browser_flow(
         .ok_or_else(|| "Response missing refresh_token".to_string())?;
 
     let display_name = parse_jwt_display_name(&tokens.access_token);
+    let now = chrono::Utc::now().timestamp();
+    let expires_at = now + tokens.expires_in.unwrap_or(3600) as i64;
 
     let creds = DatabricksCreds {
         workspace_url: base.clone(),
+        access_token: tokens.access_token,
         refresh_token,
+        expires_at,
         display_name: display_name.clone(),
-        authenticated_at: chrono::Utc::now().timestamp(),
+        authenticated_at: now,
     };
     save_databricks_creds(oauth_path, &creds)?;
 
