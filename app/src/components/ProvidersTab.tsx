@@ -17,7 +17,7 @@ const ALL_PROVIDERS: {
   fieldOverrides?: FieldOverrides;
 }[] = [
   { name: "openai", label: "OpenAI", kind: "apikey", fields: ["api_key"] },
-  { name: "anthropic", label: "Anthropic", kind: "oauth_anthropic", fields: ["api_key"] },
+  { name: "anthropic", label: "Anthropic", kind: "apikey", fields: ["api_key"] },
   { name: "gemini", label: "Gemini", kind: "apikey", fields: ["api_key"] },
   {
     name: "databricks",
@@ -33,8 +33,6 @@ const ALL_PROVIDERS: {
   { name: "togetherai", label: "TogetherAI", kind: "apikey", fields: ["api_key"] },
   { name: "azure", label: "Azure OpenAI", kind: "apikey", fields: ["api_key", "endpoint", "api_version"] },
   { name: "bedrock", label: "AWS Bedrock", kind: "apikey", fields: ["region"] },
-  { name: "copilot", label: "GitHub Copilot", kind: "oauth_copilot", fields: [] },
-  { name: "codex_oauth", label: "OpenAI Codex (OAuth)", kind: "oauth_codex", fields: [] },
 ];
 
 interface CopilotAccount {
