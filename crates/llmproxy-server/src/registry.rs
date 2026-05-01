@@ -17,6 +17,8 @@ pub struct ProviderRegistry {
     bedrock_region: Option<String>,
     /// Databricks access token from OAuth flow.
     databricks_oauth_token: Option<String>,
+    /// Databricks workspace URL (from config or OAuth).
+    pub databricks_workspace_url: Option<String>,
 }
 
 impl ProviderRegistry {
@@ -64,7 +66,7 @@ impl ProviderRegistry {
         }
 
         // Databricks: prefer config endpoint, fall back to workspace URL saved at OAuth time.
-        let databricks_endpoint = cfg
+        let databricks_workspace_url = cfg
             .providers
             .get("databricks")
             .and_then(|p| p.endpoint.as_deref())
@@ -73,10 +75,10 @@ impl ProviderRegistry {
             .map(str::to_string)
             .or_else(|| oauth.databricks_workspace_url.clone());
 
-        if let Some(endpoint) = databricks_endpoint {
+        if let Some(ref endpoint) = databricks_workspace_url {
             providers.insert(
                 "databricks".into(),
-                Arc::new(PassthroughProvider::databricks(endpoint)),
+                Arc::new(PassthroughProvider::databricks(endpoint.clone())),
             );
         }
 
@@ -94,6 +96,7 @@ impl ProviderRegistry {
             config_creds,
             bedrock_region,
             databricks_oauth_token: oauth.databricks_access_token.clone(),
+            databricks_workspace_url,
         }
     }
 
