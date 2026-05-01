@@ -2,8 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use llmproxy_core::{error::ProxyError, provider::Credential, provider::Provider};
 use llmproxy_providers::{
-    AnthropicProvider, BedrockProvider, CodexOAuthProvider, CopilotProvider, GeminiProvider,
-    PassthroughProvider,
+    AnthropicOAuthProvider, AnthropicProvider, BedrockProvider, CodexOAuthProvider,
+    CopilotProvider, DatabricksOAuthProvider, GeminiProvider, PassthroughProvider,
 };
 
 use crate::config::{AppConfig, ProviderConfig};
@@ -15,9 +15,10 @@ pub struct ProviderRegistry {
     config_creds: HashMap<String, Credential>,
     /// Config-file region (used for Bedrock when no `AWS_REGION` env var).
     bedrock_region: Option<String>,
-    /// Databricks access token from OAuth flow.
-    databricks_oauth_token: Option<String>,
-    /// Databricks workspace URL (from config or OAuth).
+    /// Providers that manage their own OAuth tokens internally; credential
+    /// resolution for these skips the normal header/config/env lookup.
+    oauth_managed: std::collections::HashSet<String>,
+    /// Databricks workspace URL (from OAuth or config); used by the admin model-listing endpoint.
     pub databricks_workspace_url: Option<String>,
 }
 
@@ -26,6 +27,7 @@ impl ProviderRegistry {
         let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
         let mut config_creds: HashMap<String, Credential> = HashMap::new();
         let mut bedrock_region: Option<String> = None;
+        let mut oauth_managed = std::collections::HashSet::new();
 
         providers.insert("openai".into(), Arc::new(PassthroughProvider::openai()));
         providers.insert("mistral".into(), Arc::new(PassthroughProvider::mistral()));
@@ -33,9 +35,19 @@ impl ProviderRegistry {
             "togetherai".into(),
             Arc::new(PassthroughProvider::togetherai()),
         );
-        providers.insert("anthropic".into(), Arc::new(AnthropicProvider::new()));
         providers.insert("gemini".into(), Arc::new(GeminiProvider::new()));
         providers.insert("bedrock".into(), Arc::new(BedrockProvider::new()));
+
+        // Anthropic: use OAuth provider if refresh token present, else standard.
+        if let Some(refresh_token) = &oauth.anthropic_refresh_token {
+            providers.insert(
+                "anthropic".into(),
+                Arc::new(AnthropicOAuthProvider::new(refresh_token.clone())),
+            );
+            oauth_managed.insert("anthropic".into());
+        } else {
+            providers.insert("anthropic".into(), Arc::new(AnthropicProvider::new()));
+        }
 
         // OAuth providers — only registered when credentials are present.
         if let Some(github_token) = &oauth.copilot_github_token {
@@ -43,12 +55,14 @@ impl ProviderRegistry {
                 "copilot".into(),
                 Arc::new(CopilotProvider::new(github_token.clone())),
             );
+            oauth_managed.insert("copilot".into());
         }
         if let Some(refresh_token) = &oauth.codex_refresh_token {
             providers.insert(
                 "codex_oauth".into(),
                 Arc::new(CodexOAuthProvider::new(refresh_token.clone())),
             );
+            oauth_managed.insert("codex_oauth".into());
         }
 
         // Azure requires endpoint + api_version, so it's only registered when
@@ -65,17 +79,33 @@ impl ProviderRegistry {
             }
         }
 
-        // Databricks: prefer config endpoint, fall back to workspace URL saved at OAuth time.
-        let databricks_workspace_url = cfg
-            .providers
-            .get("databricks")
-            .and_then(|p| p.endpoint.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .or_else(|| oauth.databricks_workspace_url.clone());
+        // Databricks: use DatabricksOAuthProvider when refresh token present;
+        // fall back to PassthroughProvider when only an endpoint/workspace URL is configured.
+        let databricks_workspace_url = oauth
+            .databricks_workspace_url
+            .clone()
+            .or_else(|| {
+                cfg.providers
+                    .get("databricks")
+                    .and_then(|p| p.endpoint.as_deref())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            });
 
-        if let Some(ref endpoint) = databricks_workspace_url {
+        if let (Some(workspace_url), Some(refresh_token)) = (
+            &databricks_workspace_url,
+            &oauth.databricks_refresh_token,
+        ) {
+            providers.insert(
+                "databricks".into(),
+                Arc::new(DatabricksOAuthProvider::new(
+                    workspace_url.clone(),
+                    refresh_token.clone(),
+                )),
+            );
+            oauth_managed.insert("databricks".into());
+        } else if let Some(ref endpoint) = databricks_workspace_url {
             providers.insert(
                 "databricks".into(),
                 Arc::new(PassthroughProvider::databricks(endpoint.clone())),
@@ -95,7 +125,7 @@ impl ProviderRegistry {
             providers,
             config_creds,
             bedrock_region,
-            databricks_oauth_token: oauth.databricks_access_token.clone(),
+            oauth_managed,
             databricks_workspace_url,
         }
     }
@@ -163,9 +193,9 @@ impl ProviderRegistry {
             return self.resolve_aws_credential();
         }
 
-        // OAuth providers manage their own credentials internally; just confirm
+        // OAuth-managed providers handle credentials internally; just confirm
         // the provider is registered (i.e. the user has signed in).
-        if provider_name == "copilot" || provider_name == "codex_oauth" {
+        if self.oauth_managed.contains(provider_name) {
             return if self.providers.contains_key(provider_name) {
                 Ok(Credential::BearerToken("oauth".into()))
             } else {
@@ -182,14 +212,6 @@ impl ProviderRegistry {
 
         if let Some(cred) = self.config_creds.get(provider_name) {
             return Ok(cred.clone());
-        }
-
-        // Databricks OAuth access token (from browser PKCE flow) takes priority
-        // over the env var so users who signed in via the app don't need DATABRICKS_TOKEN.
-        if provider_name == "databricks" {
-            if let Some(token) = &self.databricks_oauth_token {
-                return Ok(Credential::BearerToken(token.clone()));
-            }
         }
 
         if let Some(env_key) = env_key_for(provider_name) {

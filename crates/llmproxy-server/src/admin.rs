@@ -305,8 +305,8 @@ async fn provider_models_handler(
                 .providers
                 .get("databricks")
                 .and_then(|p| p.endpoint.as_deref())
-                .map(|s| s.trim_end_matches('/').to_string())
-                .filter(|s| !s.is_empty())
+                .map(|u| u.trim_end_matches('/').to_string())
+                .filter(|u| !u.is_empty())
                 .or_else(|| {
                     s.registry
                         .databricks_workspace_url
