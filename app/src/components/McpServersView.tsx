@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-type McpTransport = "stdio" | "sse" | "http";
+type McpTransport = "stdio" | "http";
 
 interface McpServer {
   id: string;
@@ -188,7 +188,7 @@ export default function McpServersView({ onBack }: Props) {
     }));
   };
 
-  const isHttp = form.transport === "sse" || form.transport === "http";
+  const isHttp = form.transport === "http";
 
   return (
     <div className="p-5 max-w-2xl space-y-4">
@@ -265,7 +265,7 @@ export default function McpServersView({ onBack }: Props) {
           <div className="space-y-2">
             <label className="block text-xs text-gray-500">Transport</label>
             <div className="flex gap-2">
-              {(["http", "sse", "stdio"] as McpTransport[]).map((t) => (
+              {(["http", "stdio"] as McpTransport[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setForm({ ...form, transport: t })}
@@ -275,7 +275,7 @@ export default function McpServersView({ onBack }: Props) {
                       : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
                   }`}
                 >
-                  {t === "stdio" ? "Stdio" : t === "sse" ? "SSE" : "HTTP"}
+                  {t === "stdio" ? "Stdio" : "HTTP"}
                 </button>
               ))}
             </div>
@@ -409,9 +409,7 @@ export default function McpServersView({ onBack }: Props) {
                     })}
                   </div>
                   <code className="text-xs text-gray-500 font-mono mt-0.5 block truncate">
-                    {s.transport === "sse" || s.transport === "http"
-                      ? s.url
-                      : `${s.command} ${s.args.join(" ")}`}
+                    {s.transport === "http" ? s.url : `${s.command} ${s.args.join(" ")}`}
                   </code>
                 </div>
                 <div className="flex gap-2 flex-shrink-0">

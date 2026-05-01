@@ -6,7 +6,6 @@ use std::collections::HashMap;
 pub enum McpTransport {
     #[default]
     Http,
-    Sse,
     Stdio,
 }
 
@@ -206,8 +205,7 @@ impl McpEntry {
     fn resolve_transport(mut self) -> Self {
         self.transport = match self.transport_type.as_deref() {
             Some("http") => McpTransport::Http,
-            Some("sse") => McpTransport::Sse,
-            _ => McpTransport::Stdio, // no type field means stdio in existing agent configs
+            _ => McpTransport::Stdio, // no type field (or legacy "sse") means stdio in existing agent configs
         };
         self
     }
@@ -247,9 +245,8 @@ pub fn mcp_servers_json(servers: &[McpServer], agent: &str) -> serde_json::Value
         }
         let mut entry = serde_json::Map::new();
         match s.transport {
-            McpTransport::Sse | McpTransport::Http => {
-                let type_str = if s.transport == McpTransport::Http { "http" } else { "sse" };
-                entry.insert("type".into(), serde_json::Value::String(type_str.into()));
+            McpTransport::Http => {
+                entry.insert("type".into(), serde_json::Value::String("http".into()));
                 entry.insert("url".into(), serde_json::Value::String(s.url.clone()));
                 if !s.headers.is_empty() {
                     let h: serde_json::Map<_, _> = s
