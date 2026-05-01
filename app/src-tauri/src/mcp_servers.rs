@@ -22,7 +22,7 @@ pub struct McpServer {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
-    // http/sse fields
+    // http fields
     #[serde(default)]
     pub url: String,
     #[serde(default)]
@@ -55,13 +55,14 @@ fn store_path(config_dir: &std::path::Path) -> std::path::PathBuf {
     config_dir.join("mcp_servers.json")
 }
 
-pub fn load(config_dir: &std::path::Path) -> Vec<McpServer> {
+/// Returns Ok(empty) when the file doesn't exist, Err when it exists but is unreadable/corrupt.
+pub fn load(config_dir: &std::path::Path) -> Result<Vec<McpServer>, String> {
     let path = store_path(config_dir);
     if !path.exists() {
-        return vec![];
+        return Ok(vec![]);
     }
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    serde_json::from_str(&content).unwrap_or_default()
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&content).map_err(|e| format!("mcp_servers.json is corrupted: {e}"))
 }
 
 pub fn save(config_dir: &std::path::Path, servers: &[McpServer]) -> Result<(), String> {
@@ -72,9 +73,12 @@ pub fn save(config_dir: &std::path::Path, servers: &[McpServer]) -> Result<(), S
 }
 
 pub fn add(config_dir: &std::path::Path, input: McpServerInput) -> Result<McpServer, String> {
-    let mut servers = load(config_dir);
+    let mut servers = load(config_dir)?;
+    if servers.iter().any(|s| s.name == input.name) {
+        return Err(format!("MCP server '{}' already exists", input.name));
+    }
     let server = McpServer {
-        id: uuid_v4(),
+        id: uuid_v4()?,
         name: input.name,
         transport: input.transport,
         command: input.command,
@@ -90,7 +94,7 @@ pub fn add(config_dir: &std::path::Path, input: McpServerInput) -> Result<McpSer
 }
 
 pub fn remove(config_dir: &std::path::Path, id: &str) -> Result<(), String> {
-    let mut servers = load(config_dir);
+    let mut servers = load(config_dir)?;
     let before = servers.len();
     servers.retain(|s| s.id != id);
     if servers.len() == before {
@@ -104,7 +108,11 @@ pub fn update(
     id: &str,
     input: McpServerInput,
 ) -> Result<McpServer, String> {
-    let mut servers = load(config_dir);
+    let mut servers = load(config_dir)?;
+    // Enforce unique names, excluding the server being updated
+    if servers.iter().any(|s| s.name == input.name && s.id != id) {
+        return Err(format!("MCP server '{}' already exists", input.name));
+    }
     let server = servers
         .iter_mut()
         .find(|s| s.id == id)
@@ -122,56 +130,54 @@ pub fn update(
     Ok(updated)
 }
 
-/// Import MCP servers that exist in the coding agents' own config files
-/// but are not yet tracked in our store.
+/// Import MCP servers from agent config files, merging agent assignments for duplicate names.
 pub fn import_from_agents(
     config_dir: &std::path::Path,
     home: &std::path::Path,
 ) -> Result<Vec<McpServer>, String> {
-    let existing = load(config_dir);
-    let mut imported: Vec<McpServer> = vec![];
+    let mut existing = load(config_dir)?;
+    let mut newly_added: Vec<McpServer> = vec![];
+    let mut modified_existing = false;
 
-    // Claude Code: ~/.claude/settings.json
-    if let Some(servers) = read_claude_mcp(home) {
-        for (name, entry) in servers {
-            if existing.iter().any(|s| s.name == name) {
+    let sources: Vec<(&str, Option<HashMap<String, McpEntry>>)> = vec![
+        ("claude_code", read_claude_mcp(home)),
+        ("gemini", read_gemini_mcp(home)),
+        ("codex", read_codex_mcp(home)),
+    ];
+
+    for (agent_key, maybe_map) in sources {
+        let Some(map) = maybe_map else { continue };
+        for (name, entry) in map {
+            // Check if name already tracked in existing store — merge agents
+            if let Some(s) = existing.iter_mut().find(|s| s.name == name) {
+                if !s.agents.iter().any(|a| a == agent_key) {
+                    s.agents.push(agent_key.to_string());
+                    modified_existing = true;
+                }
                 continue;
             }
-            imported.push(entry_to_server(name, entry, "claude_code"));
+            // Check if already in newly_added — merge agents
+            if let Some(s) = newly_added.iter_mut().find(|s| s.name == name) {
+                if !s.agents.iter().any(|a| a == agent_key) {
+                    s.agents.push(agent_key.to_string());
+                }
+                continue;
+            }
+            newly_added.push(entry_to_server(name, entry, agent_key.to_string())?);
         }
     }
 
-    // Gemini: ~/.gemini/settings.json
-    if let Some(servers) = read_gemini_mcp(home) {
-        for (name, entry) in servers {
-            if existing.iter().chain(imported.iter()).any(|s| s.name == name) {
-                continue;
-            }
-            imported.push(entry_to_server(name, entry, "gemini"));
-        }
-    }
-
-    // Codex: ~/.codex/mcp.json
-    if let Some(servers) = read_codex_mcp(home) {
-        for (name, entry) in servers {
-            if existing.iter().chain(imported.iter()).any(|s| s.name == name) {
-                continue;
-            }
-            imported.push(entry_to_server(name, entry, "codex"));
-        }
-    }
-
-    if !imported.is_empty() {
+    if !newly_added.is_empty() || modified_existing {
         let mut all = existing;
-        all.extend(imported.clone());
+        all.extend(newly_added.clone());
         save(config_dir, &all)?;
     }
-    Ok(imported)
+    Ok(newly_added)
 }
 
-fn entry_to_server(name: String, entry: McpEntry, agent: &str) -> McpServer {
-    McpServer {
-        id: uuid_v4(),
+fn entry_to_server(name: String, entry: McpEntry, agent: String) -> Result<McpServer, String> {
+    Ok(McpServer {
+        id: uuid_v4()?,
         name,
         transport: entry.transport,
         command: entry.command,
@@ -179,8 +185,8 @@ fn entry_to_server(name: String, entry: McpEntry, agent: &str) -> McpServer {
         env: entry.env,
         url: entry.url,
         headers: entry.headers,
-        agents: vec![agent.into()],
-    }
+        agents: vec![agent],
+    })
 }
 
 #[derive(Deserialize, Default)]
@@ -205,7 +211,7 @@ impl McpEntry {
     fn resolve_transport(mut self) -> Self {
         self.transport = match self.transport_type.as_deref() {
             Some("http") => McpTransport::Http,
-            _ => McpTransport::Stdio, // no type field (or legacy "sse") means stdio in existing agent configs
+            _ => McpTransport::Stdio, // no type field (or legacy "sse") means stdio
         };
         self
     }
@@ -280,16 +286,16 @@ pub fn mcp_servers_json(servers: &[McpServer], agent: &str) -> serde_json::Value
     serde_json::Value::Object(obj)
 }
 
-fn uuid_v4() -> String {
+fn uuid_v4() -> Result<String, String> {
     let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).expect("getrandom failed");
+    getrandom::getrandom(&mut bytes).map_err(|e| format!("RNG failure: {e}"))?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    format!(
+    Ok(format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         bytes[0], bytes[1], bytes[2], bytes[3],
         bytes[4], bytes[5], bytes[6], bytes[7],
         bytes[8], bytes[9],
         bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-    )
+    ))
 }

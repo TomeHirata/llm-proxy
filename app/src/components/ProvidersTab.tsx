@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { api, type Config, type ProviderPatch } from "../api";
 
@@ -7,33 +7,65 @@ type FieldOverrides = {
   endpoint?: { label?: string; placeholder?: string };
 };
 
+type ProviderKind = "apikey" | "oauth_copilot" | "oauth_codex";
+
 const ALL_PROVIDERS: {
   name: string;
   label: string;
+  kind: ProviderKind;
   fields: string[];
   fieldOverrides?: FieldOverrides;
 }[] = [
-  { name: "openai", label: "OpenAI", fields: ["api_key"] },
-  { name: "anthropic", label: "Anthropic", fields: ["api_key"] },
-  { name: "gemini", label: "Gemini", fields: ["api_key"] },
+  { name: "openai", label: "OpenAI", kind: "apikey", fields: ["api_key"] },
+  { name: "anthropic", label: "Anthropic", kind: "apikey", fields: ["api_key"] },
+  { name: "gemini", label: "Gemini", kind: "apikey", fields: ["api_key"] },
   {
     name: "databricks",
     label: "Databricks",
+    kind: "apikey",
     fields: ["endpoint", "api_key"],
     fieldOverrides: {
       endpoint: { label: "Workspace URL", placeholder: "https://my-workspace.azuredatabricks.net" },
       api_key: { label: "Personal Access Token" },
     },
   },
-  { name: "mistral", label: "Mistral", fields: ["api_key"] },
-  { name: "togetherai", label: "TogetherAI", fields: ["api_key"] },
-  {
-    name: "azure",
-    label: "Azure OpenAI",
-    fields: ["api_key", "endpoint", "api_version"],
-  },
-  { name: "bedrock", label: "AWS Bedrock", fields: ["region"] },
+  { name: "mistral", label: "Mistral", kind: "apikey", fields: ["api_key"] },
+  { name: "togetherai", label: "TogetherAI", kind: "apikey", fields: ["api_key"] },
+  { name: "azure", label: "Azure OpenAI", kind: "apikey", fields: ["api_key", "endpoint", "api_version"] },
+  { name: "bedrock", label: "AWS Bedrock", kind: "apikey", fields: ["region"] },
+  { name: "copilot", label: "GitHub Copilot", kind: "oauth_copilot", fields: [] },
+  { name: "codex_oauth", label: "OpenAI Codex (OAuth)", kind: "oauth_codex", fields: [] },
 ];
+
+interface CopilotAccount {
+  login: string;
+  avatar_url: string | null;
+  authenticated_at: number;
+}
+
+interface CodexAccount {
+  account_id: string;
+  email: string | null;
+  authenticated_at: number;
+}
+
+interface DeviceFlowInfo {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+}
+
+interface OAuthFlowState {
+  providerName: string;
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  interval: number;
+  polling: boolean;
+  error: string;
+}
 
 interface Props {
   proxyOnline: boolean;
@@ -49,16 +81,115 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
   const [saved, setSaved] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // OAuth state
+  const [copilotAccount, setCopilotAccount] = useState<CopilotAccount | null>(null);
+  const [codexAccount, setCodexAccount] = useState<CodexAccount | null>(null);
+  const [oauthFlow, setOAuthFlow] = useState<OAuthFlowState | null>(null);
+  const [oauthBusy, setOAuthBusy] = useState<string | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshOAuthStatus = useCallback(async () => {
+    try {
+      const c = await invoke<CopilotAccount | null>("copilot_oauth_status");
+      setCopilotAccount(c);
+    } catch { /* non-fatal */ }
+    try {
+      const d = await invoke<CodexAccount | null>("codex_oauth_status");
+      setCodexAccount(d);
+    } catch { /* non-fatal */ }
+  }, []);
+
   useEffect(() => {
     if (proxyOnline) {
       api.config().then(setCfg).catch(() => setCfg(null));
     }
-  }, [proxyOnline]);
+    refreshOAuthStatus();
+  }, [proxyOnline, refreshOAuthStatus]);
+
+  // Poll device flow while active
+  useEffect(() => {
+    if (!oauthFlow?.polling) return;
+
+    const poll = async () => {
+      try {
+        if (oauthFlow.providerName === "copilot") {
+          const account = await invoke<CopilotAccount | null>("copilot_poll_device_flow", {
+            deviceCode: oauthFlow.deviceCode,
+          });
+          if (account) {
+            setCopilotAccount(account);
+            setOAuthFlow(null);
+            setOAuthBusy(null);
+            return;
+          }
+        } else {
+          const account = await invoke<CodexAccount | null>("codex_poll_device_flow", {
+            deviceCode: oauthFlow.deviceCode,
+            userCode: oauthFlow.userCode,
+          });
+          if (account) {
+            setCodexAccount(account);
+            setOAuthFlow(null);
+            setOAuthBusy(null);
+            return;
+          }
+        }
+        pollTimer.current = setTimeout(poll, oauthFlow.interval * 1000);
+      } catch (e) {
+        setOAuthFlow((prev) => prev ? { ...prev, polling: false, error: String(e) } : null);
+        setOAuthBusy(null);
+      }
+    };
+
+    pollTimer.current = setTimeout(poll, oauthFlow.interval * 1000);
+    return () => { if (pollTimer.current) clearTimeout(pollTimer.current); };
+  }, [oauthFlow?.polling, oauthFlow?.deviceCode, oauthFlow?.providerName, oauthFlow?.interval]);
+
+  const startOAuth = async (providerName: string) => {
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    setOAuthBusy(providerName);
+    setOAuthFlow(null);
+    try {
+      const info = await invoke<DeviceFlowInfo>(
+        providerName === "copilot" ? "copilot_start_device_flow" : "codex_start_device_flow"
+      );
+      setOAuthFlow({
+        providerName,
+        deviceCode: info.device_code,
+        userCode: info.user_code,
+        verificationUri: info.verification_uri,
+        interval: info.interval,
+        polling: true,
+        error: "",
+      });
+    } catch (e) {
+      setOAuthFlow({ providerName, deviceCode: "", userCode: "", verificationUri: "", interval: 5, polling: false, error: String(e) });
+      setOAuthBusy(null);
+    }
+  };
+
+  const cancelOAuth = () => {
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    setOAuthFlow(null);
+    setOAuthBusy(null);
+  };
+
+  const oauthLogout = async (providerName: string) => {
+    setOAuthBusy(providerName);
+    try {
+      if (providerName === "copilot") {
+        await invoke("copilot_oauth_logout");
+        setCopilotAccount(null);
+      } else {
+        await invoke("codex_oauth_logout");
+        setCodexAccount(null);
+      }
+    } catch { /* non-fatal */ }
+    finally { setOAuthBusy(null); }
+  };
 
   const startEdit = (name: string) => {
     const existing = cfg?.providers[name] ?? {};
-    // Treat the redacted sentinel "***" as empty — saving it would overwrite
-    // the real key in the config file with the literal string "***".
     const apiKey = existing.api_key === "***" ? "" : (existing.api_key ?? "");
     setDraft({
       api_key: apiKey,
@@ -82,7 +213,6 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
       await api.updateProvider(name, patch);
       setEditing(null);
       setSaved(name);
-      // Restart proxy so it reloads credentials from the updated config file
       setRestarting(true);
       try {
         await invoke("stop_proxy");
@@ -124,23 +254,103 @@ export default function ProvidersTab({ proxyOnline, configuredProviders }: Props
         <div className="p-3 bg-red-50 text-red-700 rounded text-sm">{error}</div>
       )}
 
-      {ALL_PROVIDERS.map(({ name, label, fields, fieldOverrides }) => {
+      {ALL_PROVIDERS.map(({ name, label, kind, fields, fieldOverrides }) => {
         const configured = configuredProviders.includes(name);
         const isEditing = editing === name;
 
+        if (kind === "oauth_copilot" || kind === "oauth_codex") {
+          const account = kind === "oauth_copilot" ? copilotAccount : codexAccount;
+          const isBusy = oauthBusy === name;
+          const activeFlow = oauthFlow?.providerName === name ? oauthFlow : null;
+          const displayName =
+            account
+              ? kind === "oauth_copilot"
+                ? (account as CopilotAccount).login
+                : ((account as CodexAccount).email ?? (account as CodexAccount).account_id)
+              : null;
+
+          return (
+            <div key={name} className="bg-white rounded-lg border border-gray-200 p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-gray-800">{label}</span>
+                  <span
+                    className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                      configured ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+                    }`}
+                  >
+                    {configured ? "Connected" : "Not connected"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {account ? (
+                    <>
+                      <span className="text-xs text-gray-500">{displayName}</span>
+                      <button
+                        onClick={() => oauthLogout(name)}
+                        disabled={isBusy}
+                        className="text-xs px-3 py-1.5 rounded-lg text-red-500 bg-red-50 hover:bg-red-100 disabled:opacity-40"
+                      >
+                        {isBusy ? "Signing out…" : "Sign out"}
+                      </button>
+                    </>
+                  ) : activeFlow ? (
+                    <button
+                      onClick={cancelOAuth}
+                      className="text-xs px-3 py-1.5 rounded-lg text-gray-500 bg-gray-100 hover:bg-gray-200"
+                    >
+                      Cancel
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => startOAuth(name)}
+                      disabled={isBusy}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-white hover:bg-gray-700 disabled:opacity-40"
+                    >
+                      {isBusy ? "Starting…" : "Sign in"}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {activeFlow?.polling && (
+                <div className="mt-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5 space-y-1.5">
+                  <p className="text-xs text-blue-800 font-medium">
+                    Open this URL and enter the code below:
+                  </p>
+                  <a
+                    href={activeFlow.verificationUri}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-blue-600 underline break-all"
+                  >
+                    {activeFlow.verificationUri}
+                  </a>
+                  <div className="flex items-center gap-2">
+                    <code className="text-sm font-mono font-bold tracking-widest text-blue-900 bg-blue-100 px-2 py-0.5 rounded">
+                      {activeFlow.userCode}
+                    </code>
+                    <span className="text-xs text-blue-500 animate-pulse">Waiting…</span>
+                  </div>
+                </div>
+              )}
+
+              {activeFlow?.error && (
+                <p className="text-xs text-red-500 mt-2">{activeFlow.error}</p>
+              )}
+            </div>
+          );
+        }
+
+        // API-key provider
         return (
-          <div
-            key={name}
-            className="bg-white rounded-lg border border-gray-200 p-4"
-          >
+          <div key={name} className="bg-white rounded-lg border border-gray-200 p-4">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <span className="font-medium text-gray-800">{label}</span>
                 <span
                   className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                    configured
-                      ? "bg-green-100 text-green-700"
-                      : "bg-gray-100 text-gray-500"
+                    configured ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
                   }`}
                 >
                   {configured ? "Configured" : "Not configured"}

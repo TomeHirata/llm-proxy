@@ -22,6 +22,7 @@ const AGENTS = [
 ] as const;
 
 type AgentKey = (typeof AGENTS)[number]["key"];
+const AGENT_KEYS = AGENTS.map((a) => a.key) as AgentKey[];
 
 interface Props {
   onBack: () => void;
@@ -30,13 +31,11 @@ interface Props {
 interface FormState {
   name: string;
   transport: McpTransport;
-  // stdio
   command: string;
   args: string;   // newline-separated
   env: string;    // KEY=VALUE newline-separated
-  // http/sse
   url: string;
-  headers: string; // KEY: VALUE newline-separated
+  headers: string; // Key: Value newline-separated
   agents: AgentKey[];
 }
 
@@ -73,14 +72,18 @@ export default function McpServersView({ onBack }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm());
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [pageError, setPageError] = useState("");
+  const [pageInfo, setPageInfo] = useState("");
+  const [formError, setFormError] = useState("");
   const [importing, setImporting] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const s = await invoke<McpServer[]>("read_mcp_servers");
       setServers(s);
-    } catch { /* non-fatal */ }
+    } catch (e) {
+      setPageError(String(e));
+    }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -91,7 +94,9 @@ export default function McpServersView({ onBack }: Props) {
   const openAdd = () => {
     setEditingId(null);
     setForm(emptyForm());
-    setError("");
+    setFormError("");
+    setPageError("");
+    setPageInfo("");
     setShowForm(true);
   };
 
@@ -105,27 +110,30 @@ export default function McpServersView({ onBack }: Props) {
       env: serializeKv(s.env, "="),
       url: s.url,
       headers: serializeKv(s.headers, ": "),
-      agents: s.agents as AgentKey[],
+      // Filter to known agent keys to avoid stale or unknown values
+      agents: s.agents.filter((a): a is AgentKey => AGENT_KEYS.includes(a as AgentKey)),
     });
-    setError("");
+    setFormError("");
+    setPageError("");
+    setPageInfo("");
     setShowForm(true);
   };
 
   const submit = async () => {
     if (!form.name.trim()) {
-      setError("Name is required.");
+      setFormError("Name is required.");
       return;
     }
     if (form.transport === "stdio" && !form.command.trim()) {
-      setError("Command is required for stdio servers.");
+      setFormError("Command is required for stdio servers.");
       return;
     }
-    if ((form.transport === "sse" || form.transport === "http") && !form.url.trim()) {
-      setError("URL is required for HTTP/SSE servers.");
+    if (form.transport === "http" && !form.url.trim()) {
+      setFormError("URL is required for HTTP servers.");
       return;
     }
     setBusy(true);
-    setError("");
+    setFormError("");
     const payload = {
       name: form.name.trim(),
       transport: form.transport,
@@ -145,7 +153,7 @@ export default function McpServersView({ onBack }: Props) {
       setShowForm(false);
       await refresh();
     } catch (e) {
-      setError(String(e));
+      setFormError(String(e));
     } finally {
       setBusy(false);
     }
@@ -153,11 +161,13 @@ export default function McpServersView({ onBack }: Props) {
 
   const remove = async (id: string) => {
     setBusy(true);
+    setPageError("");
+    setPageInfo("");
     try {
       await invoke("remove_mcp_server", { id });
       await refresh();
     } catch (e) {
-      setError(String(e));
+      setPageError(String(e));
     } finally {
       setBusy(false);
     }
@@ -165,15 +175,16 @@ export default function McpServersView({ onBack }: Props) {
 
   const importExisting = async () => {
     setImporting(true);
-    setError("");
+    setPageError("");
+    setPageInfo("");
     try {
       const imported = await invoke<McpServer[]>("import_mcp_servers");
       await refresh();
       if (imported.length === 0) {
-        setError("No new MCP servers found in agent config files.");
+        setPageInfo("No new MCP servers found in agent config files.");
       }
     } catch (e) {
-      setError(String(e));
+      setPageError(String(e));
     } finally {
       setImporting(false);
     }
@@ -239,8 +250,11 @@ export default function McpServersView({ onBack }: Props) {
         </div>
       </div>
 
-      {error && (
-        <p className="text-xs text-red-500 bg-red-50 rounded px-3 py-2">{error}</p>
+      {pageError && (
+        <p className="text-xs text-red-500 bg-red-50 rounded px-3 py-2">{pageError}</p>
+      )}
+      {pageInfo && (
+        <p className="text-xs text-blue-600 bg-blue-50 rounded px-3 py-2">{pageInfo}</p>
       )}
 
       {/* Add / Edit form */}
@@ -295,11 +309,13 @@ export default function McpServersView({ onBack }: Props) {
               </div>
 
               <div className="space-y-2">
-                <label className="block text-xs text-gray-500">Headers (Key: Value, one per line)</label>
+                <label className="block text-xs text-gray-500">
+                  Headers (Key: Value, one per line) — leave empty for OAuth 2.1 servers
+                </label>
                 <textarea
                   value={form.headers}
                   onChange={(e) => setForm({ ...form, headers: e.target.value })}
-                  placeholder={"Authorization: Bearer ghp_xxxx"}
+                  placeholder={"Authorization: Bearer token"}
                   rows={3}
                   className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"
                 />
@@ -359,7 +375,7 @@ export default function McpServersView({ onBack }: Props) {
             </div>
           </div>
 
-          {error && <p className="text-xs text-red-500">{error}</p>}
+          {formError && <p className="text-xs text-red-500">{formError}</p>}
 
           <div className="flex gap-2 pt-1">
             <button
@@ -370,7 +386,7 @@ export default function McpServersView({ onBack }: Props) {
               {busy ? "Saving…" : editingId ? "Save" : "Add"}
             </button>
             <button
-              onClick={() => { setShowForm(false); setError(""); }}
+              onClick={() => { setShowForm(false); setFormError(""); }}
               className="px-3 py-1.5 text-gray-600 rounded-lg text-xs hover:bg-gray-100"
             >
               Cancel

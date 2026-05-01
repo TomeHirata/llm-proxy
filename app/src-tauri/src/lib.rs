@@ -1,4 +1,7 @@
+mod codex_oauth;
+mod copilot_auth;
 mod mcp_servers;
+mod oauth_store;
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -7,6 +10,12 @@ use tauri::{
 };
 
 const PROXY_BASE: &str = "http://127.0.0.1:8080";
+
+fn oauth_config_dir() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".config/llmproxy")
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -58,6 +67,14 @@ pub fn run() {
             remove_mcp_server,
             update_mcp_server,
             import_mcp_servers,
+            copilot_start_device_flow,
+            copilot_poll_device_flow,
+            copilot_oauth_status,
+            copilot_oauth_logout,
+            codex_start_device_flow,
+            codex_poll_device_flow,
+            codex_oauth_status,
+            codex_oauth_logout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running llmproxy app");
@@ -362,7 +379,7 @@ fn apply_claude_code(model: &str) -> Result<(), String> {
     json["env"] = serde_json::Value::Object(env_map);
     json["model"] = serde_json::Value::String(model.into());
 
-    let servers = mcp_servers::load(&llmproxy_config_dir());
+    let servers = mcp_servers::load(&llmproxy_config_dir()).unwrap_or_default();
     json["mcpServers"] = mcp_servers::mcp_servers_json(&servers, "claude_code");
 
     std::fs::write(
@@ -422,7 +439,7 @@ fn apply_codex(model: &str) -> Result<(), String> {
 
     // Write MCP servers to ~/.codex/mcp.json
     let mcp_path = home_dir().join(".codex").join("mcp.json");
-    let servers = mcp_servers::load(&llmproxy_config_dir());
+    let servers = mcp_servers::load(&llmproxy_config_dir()).unwrap_or_default();
     let mcp_json = serde_json::json!({ "mcpServers": mcp_servers::mcp_servers_json(&servers, "codex") });
     std::fs::write(
         &mcp_path,
@@ -465,7 +482,7 @@ fn apply_gemini(model: &str) -> Result<(), String> {
     } else {
         serde_json::json!({})
     };
-    let servers = mcp_servers::load(&llmproxy_config_dir());
+    let servers = mcp_servers::load(&llmproxy_config_dir()).unwrap_or_default();
     settings["mcpServers"] = mcp_servers::mcp_servers_json(&servers, "gemini");
     std::fs::write(
         &settings_path,
@@ -499,7 +516,10 @@ fn reset_claude_code() -> Result<(), String> {
         env.remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
         env.remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
     }
-    json.as_object_mut().map(|o| o.remove("model"));
+    if let Some(obj) = json.as_object_mut() {
+        obj.remove("model");
+        obj.remove("mcpServers");
+    }
     std::fs::write(
         &path,
         serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
@@ -531,7 +551,14 @@ fn reset_codex() -> Result<(), String> {
         &path,
         toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    // Remove llmproxy-managed MCP config
+    let mcp_path = home_dir().join(".codex").join("mcp.json");
+    if mcp_path.exists() {
+        std::fs::remove_file(&mcp_path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn reset_gemini() -> Result<(), String> {
@@ -549,13 +576,30 @@ fn reset_gemini() -> Result<(), String> {
         .lines()
         .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
         .collect();
-    std::fs::write(&path, filtered.join("\n") + "\n").map_err(|e| e.to_string())
+    std::fs::write(&path, filtered.join("\n") + "\n").map_err(|e| e.to_string())?;
+
+    // Remove llmproxy-managed mcpServers from settings.json
+    let settings_path = home_dir().join(".gemini").join("settings.json");
+    if settings_path.exists() {
+        let raw = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+        let mut json: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
+        if let Some(obj) = json.as_object_mut() {
+            obj.remove("mcpServers");
+        }
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ── MCP server commands ─────────────────────────────────────────────────────
 
 #[tauri::command]
-fn read_mcp_servers() -> Vec<mcp_servers::McpServer> {
+fn read_mcp_servers() -> Result<Vec<mcp_servers::McpServer>, String> {
     mcp_servers::load(&llmproxy_config_dir())
 }
 
@@ -580,4 +624,70 @@ fn update_mcp_server(
 #[tauri::command]
 fn import_mcp_servers() -> Result<Vec<mcp_servers::McpServer>, String> {
     mcp_servers::import_from_agents(&llmproxy_config_dir(), &home_dir())
+}
+
+// ── OAuth commands ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn copilot_start_device_flow() -> Result<copilot_auth::DeviceFlowInfo, String> {
+    copilot_auth::start_device_flow().await
+}
+
+#[tauri::command]
+async fn copilot_poll_device_flow(
+    app: tauri::AppHandle,
+    device_code: String,
+) -> Result<Option<copilot_auth::CopilotAccount>, String> {
+    let result = copilot_auth::poll_device_flow(&device_code, &oauth_config_dir()).await?;
+    if result.is_some() {
+        let _ = do_stop_proxy(&app).await;
+        let _ = do_start_proxy(&app).await;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn copilot_oauth_status() -> Option<copilot_auth::CopilotAccount> {
+    copilot_auth::read_copilot_account(&oauth_config_dir())
+}
+
+#[tauri::command]
+async fn copilot_oauth_logout(app: tauri::AppHandle) -> Result<(), String> {
+    copilot_auth::clear_copilot_creds(&oauth_config_dir())?;
+    let _ = do_stop_proxy(&app).await;
+    let _ = do_start_proxy(&app).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn codex_start_device_flow() -> Result<codex_oauth::DeviceFlowInfo, String> {
+    codex_oauth::start_device_flow().await
+}
+
+#[tauri::command]
+async fn codex_poll_device_flow(
+    app: tauri::AppHandle,
+    device_code: String,
+    user_code: String,
+) -> Result<Option<codex_oauth::CodexAccount>, String> {
+    let result =
+        codex_oauth::poll_device_flow(&device_code, &user_code, &oauth_config_dir()).await?;
+    if result.is_some() {
+        let _ = do_stop_proxy(&app).await;
+        let _ = do_start_proxy(&app).await;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn codex_oauth_status() -> Option<codex_oauth::CodexAccount> {
+    codex_oauth::read_codex_account(&oauth_config_dir())
+}
+
+#[tauri::command]
+async fn codex_oauth_logout(app: tauri::AppHandle) -> Result<(), String> {
+    codex_oauth::clear_codex_creds(&oauth_config_dir())?;
+    let _ = do_stop_proxy(&app).await;
+    let _ = do_start_proxy(&app).await;
+    Ok(())
 }
