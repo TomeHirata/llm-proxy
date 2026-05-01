@@ -25,3 +25,4 @@ toml               = "0.8"
 base64             = "0.22"
 chrono             = { version = "0.4", features = ["serde"] }
 dirs               = "5"
+getrandom          = "0.2"

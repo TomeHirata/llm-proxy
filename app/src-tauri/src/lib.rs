@@ -1,5 +1,6 @@
 mod codex_oauth;
 mod copilot_auth;
+mod mcp_servers;
 mod oauth_store;
 
 use tauri::{
@@ -61,6 +62,11 @@ pub fn run() {
             read_agent_configs,
             apply_agent_config,
             reset_agent_config,
+            read_mcp_servers,
+            add_mcp_server,
+            remove_mcp_server,
+            update_mcp_server,
+            import_mcp_servers,
             copilot_start_device_flow,
             copilot_poll_device_flow,
             copilot_oauth_status,
@@ -216,6 +222,10 @@ fn home_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
 }
 
+fn llmproxy_config_dir() -> std::path::PathBuf {
+    home_dir().join(".config").join("llmproxy")
+}
+
 #[derive(serde::Serialize)]
 struct AgentStatus {
     config_path: String,
@@ -369,6 +379,9 @@ fn apply_claude_code(model: &str) -> Result<(), String> {
     json["env"] = serde_json::Value::Object(env_map);
     json["model"] = serde_json::Value::String(model.into());
 
+    let servers = mcp_servers::load(&llmproxy_config_dir()).unwrap_or_default();
+    json["mcpServers"] = mcp_servers::mcp_servers_json(&servers, "claude_code");
+
     std::fs::write(
         &path,
         serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
@@ -422,17 +435,28 @@ fn apply_codex(model: &str) -> Result<(), String> {
         &path,
         toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?,
     )
+    .map_err(|e| e.to_string())?;
+
+    // Write MCP servers to ~/.codex/mcp.json
+    let mcp_path = home_dir().join(".codex").join("mcp.json");
+    let servers = mcp_servers::load(&llmproxy_config_dir()).unwrap_or_default();
+    let mcp_json =
+        serde_json::json!({ "mcpServers": mcp_servers::mcp_servers_json(&servers, "codex") });
+    std::fs::write(
+        &mcp_path,
+        serde_json::to_string_pretty(&mcp_json).map_err(|e| e.to_string())?,
+    )
     .map_err(|e| e.to_string())
 }
 
 fn apply_gemini(model: &str) -> Result<(), String> {
     let dir = home_dir().join(".gemini");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(".env");
+    let env_path = dir.join(".env");
 
     // Preserve unrelated lines; replace or append our keys.
-    let existing = if path.exists() {
-        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
+    let existing = if env_path.exists() {
+        std::fs::read_to_string(&env_path).map_err(|e| e.to_string())?
     } else {
         String::new()
     };
@@ -446,13 +470,26 @@ fn apply_gemini(model: &str) -> Result<(), String> {
         .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
         .map(str::to_string)
         .collect();
-    lines.push(format!(
-        "GOOGLE_GEMINI_BASE_URL=http://localhost:8080/gemini"
-    ));
+    lines.push("GOOGLE_GEMINI_BASE_URL=http://localhost:8080/gemini".into());
     lines.push(format!("GEMINI_MODEL={model}"));
-    lines.push(format!("GEMINI_API_KEY=llmproxy"));
+    lines.push("GEMINI_API_KEY=llmproxy".into());
+    std::fs::write(&env_path, lines.join("\n") + "\n").map_err(|e| e.to_string())?;
 
-    std::fs::write(&path, lines.join("\n") + "\n").map_err(|e| e.to_string())
+    // Write MCP servers to ~/.gemini/settings.json
+    let settings_path = dir.join("settings.json");
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let raw = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let servers = mcp_servers::load(&llmproxy_config_dir()).unwrap_or_default();
+    settings["mcpServers"] = mcp_servers::mcp_servers_json(&servers, "gemini");
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -480,7 +517,10 @@ fn reset_claude_code() -> Result<(), String> {
         env.remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
         env.remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
     }
-    json.as_object_mut().map(|o| o.remove("model"));
+    if let Some(obj) = json.as_object_mut() {
+        obj.remove("model");
+        obj.remove("mcpServers");
+    }
     std::fs::write(
         &path,
         serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
@@ -512,7 +552,14 @@ fn reset_codex() -> Result<(), String> {
         &path,
         toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    // Remove llmproxy-managed MCP config
+    let mcp_path = home_dir().join(".codex").join("mcp.json");
+    if mcp_path.exists() {
+        std::fs::remove_file(&mcp_path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn reset_gemini() -> Result<(), String> {
@@ -530,7 +577,54 @@ fn reset_gemini() -> Result<(), String> {
         .lines()
         .filter(|l| !our_keys.iter().any(|k| l.starts_with(k)))
         .collect();
-    std::fs::write(&path, filtered.join("\n") + "\n").map_err(|e| e.to_string())
+    std::fs::write(&path, filtered.join("\n") + "\n").map_err(|e| e.to_string())?;
+
+    // Remove llmproxy-managed mcpServers from settings.json
+    let settings_path = home_dir().join(".gemini").join("settings.json");
+    if settings_path.exists() {
+        let raw = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+        let mut json: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
+        if let Some(obj) = json.as_object_mut() {
+            obj.remove("mcpServers");
+        }
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ── MCP server commands ─────────────────────────────────────────────────────
+
+#[tauri::command]
+fn read_mcp_servers() -> Result<Vec<mcp_servers::McpServer>, String> {
+    mcp_servers::load(&llmproxy_config_dir())
+}
+
+#[tauri::command]
+fn add_mcp_server(server: mcp_servers::McpServerInput) -> Result<mcp_servers::McpServer, String> {
+    mcp_servers::add(&llmproxy_config_dir(), server)
+}
+
+#[tauri::command]
+fn remove_mcp_server(id: String) -> Result<(), String> {
+    mcp_servers::remove(&llmproxy_config_dir(), &id)
+}
+
+#[tauri::command]
+fn update_mcp_server(
+    id: String,
+    server: mcp_servers::McpServerInput,
+) -> Result<mcp_servers::McpServer, String> {
+    mcp_servers::update(&llmproxy_config_dir(), &id, server)
+}
+
+#[tauri::command]
+fn import_mcp_servers() -> Result<Vec<mcp_servers::McpServer>, String> {
+    mcp_servers::import_from_agents(&llmproxy_config_dir(), &home_dir())
 }
 
 // ── OAuth commands ──────────────────────────────────────────────────────────
@@ -547,7 +641,6 @@ async fn copilot_poll_device_flow(
 ) -> Result<Option<copilot_auth::CopilotAccount>, String> {
     let result = copilot_auth::poll_device_flow(&device_code, &oauth_config_dir()).await?;
     if result.is_some() {
-        // Restart the proxy so it picks up the newly stored credentials.
         let _ = do_stop_proxy(&app).await;
         let _ = do_start_proxy(&app).await;
     }
